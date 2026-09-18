@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Forge</title>
+<script>
+  // Applied before first paint so there's no flash of the wrong theme.
+  (function () {
+    try {
+      var saved = localStorage.getItem('forge-theme');
+      var theme = saved || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      document.documentElement.setAttribute('data-theme', theme);
+    } catch (e) {}
+  })();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<!-- ============ AUTH SCREEN ============ -->
+<div id="auth-screen" class="auth-screen">
+  <div class="panel auth-card">
+    <div class="sidebar-brand"><span class="mark"></span> Forge</div>
+    <div id="auth-error"></div>
+
+    <form id="setup-form" class="stack" hidden>
+      <p>First time here. Create the owner account for this Forge instance.</p>
+      <div class="field">
+        <label for="setup-username">Username</label>
+        <input id="setup-username" name="username" autocomplete="username" required minlength="3" />
+      </div>
+      <div class="field">
+        <label for="setup-password">Password</label>
+        <input id="setup-password" name="password" type="password" autocomplete="new-password" required minlength="10" />
+        <div class="hint">At least 10 characters. This is the only account — keep it safe.</div>
+      </div>
+      <button class="btn btn-primary" type="submit" style="width:100%; justify-content:center;">Create account</button>
+    </form>
+
+    <form id="login-form" class="stack" hidden>
+      <p>Sign in to your Forge instance.</p>
+      <div class="field">
+        <label for="login-username">Username</label>
+        <input id="login-username" name="username" autocomplete="username" required />
+      </div>
+      <div class="field">
+        <label for="login-password">Password</label>
+        <input id="login-password" name="password" type="password" autocomplete="current-password" required />
+      </div>
+      <button class="btn btn-primary" type="submit" style="width:100%; justify-content:center;">Sign in</button>
+    </form>
+  </div>
+</div>
+
+<!-- ============ APP SHELL ============ -->
+<div id="app-shell" class="app-shell" hidden>
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand"><span class="mark"></span> Forge</div>
+    <button class="nav-item active" data-nav="dashboard"><span class="dot"></span> Dashboard</button>
+    <button class="nav-item" data-nav="projects"><span class="dot"></span> Projects</button>
+    <button class="nav-item" data-nav="servers"><span class="dot"></span> Servers</button>
+    <button class="nav-item" data-nav="audit"><span class="dot"></span> Audit log</button>
+    <button class="nav-item" data-nav="settings"><span class="dot"></span> Settings</button>
+    <div class="sidebar-footer stack">
+      <button class="chip" id="theme-toggle" type="button">Theme</button>
+      <button class="nav-item" id="logout-btn" type="button">Log out</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="topbar">
+      <div class="inline-row">
+        <button class="btn btn-ghost btn-sm" id="sidebar-toggle" style="display:none;">☰</button>
+        <div class="breadcrumb" id="breadcrumb">Dashboard</div>
+      </div>
+      <div class="topbar-actions">
+        <button class="palette-trigger" id="palette-trigger" type="button">
+          <span>⌘K</span><span class="label">Jump to…</span>
+        </button>
+        <span id="current-user" class="pill pill-neutral"></span>
+      </div>
+    </div>
+
+    <div class="content">
+
+      <!-- DASHBOARD -->
+      <section class="view active" data-view="dashboard">
+        <div id="health-hero" class="health-hero"><div class="skeleton-line" style="width:120px;margin:0 auto;"></div></div>
+        <div class="panel">
+          <div class="panel-header"><h2>Overview</h2></div>
+          <div class="tiles" id="dashboard-tiles"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h2>Recent activity</h2><button class="btn btn-ghost btn-sm" data-nav="audit">View all</button></div>
+          <div id="dashboard-activity" class="stack"></div>
+        </div>
+      </section>
+
+      <!-- PROJECTS LIST -->
+      <section class="view" data-view="projects">
+        <div class="panel-header" style="margin-bottom:16px;">
+          <h2 style="font-size:18px;">Projects</h2>
+          <button class="btn btn-primary" id="new-project-btn">+ New project</button>
+        </div>
+        <div id="projects-list"></div>
+      </section>
+
+      <!-- PROJECT DETAIL -->
+      <section class="view" data-view="project-detail">
+        <button class="btn btn-ghost btn-sm" data-nav="projects" style="margin-bottom:12px;">← All projects</button>
+        <div id="project-detail-root"></div>
+      </section>
+
+      <!-- SERVERS -->
+      <section class="view" data-view="servers">
+        <div class="panel-header" style="margin-bottom:16px;">
+          <h2 style="font-size:18px;">Servers</h2>
+          <div class="inline-row">
+            <button class="btn" id="connect-server-btn">Connect existing</button>
+            <button class="btn btn-primary" id="provision-server-btn">Provision on AWS</button>
+          </div>
+        </div>
+        <div id="servers-list"></div>
+      </section>
+
+      <!-- SETTINGS -->
+      <section class="view" data-view="settings">
+        <div class="panel">
+          <div class="panel-header"><h2>GitHub</h2></div>
+          <div id="github-settings"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h2>AWS</h2></div>
+          <div id="aws-settings"></div>
+        </div>
+      </section>
+
+      <!-- AUDIT -->
+      <section class="view" data-view="audit">
+        <div class="panel">
+          <div class="panel-header"><h2>Audit log</h2></div>
+          <div id="audit-list"></div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<div id="modal-root"></div>
+<div class="toast-region" id="toast-region"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
