@@ -1,4 +1,9 @@
 /* ===== Design tokens (Forge Frontend Guide §3) ===== */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* :root custom properties continue below */
 :root {
   --bg: #14171b;
   --surface: #1b1f24;

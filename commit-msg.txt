@@ -1,0 +1,14 @@
+feat: React + TypeScript + Tailwind v4 frontend setup with all views and API layer
+
+- Design system docs: frontend-design.md, pages/, decisions/
+- React + TypeScript + Vite project in client/
+- Tailwind CSS v4 with Forge design tokens
+- Radix UI components: Button, Input, Card, Badge, Dialog, Tabs, Table, Toast, Dropdown, Skeleton
+- App shell: sidebar, topbar, theme toggle, mobile responsive
+- 5 views: Dashboard, Projects, Servers, Settings, Audit
+- React Query API layer with all hooks and async helpers
+- GitHub integration in New Project modal (repos, branches, detect)
+- Server connect/provision modals
+- Settings: GitHub connect/disconnect, AWS config
+- Audit log view
+- API client with React Query hooks and async helpers

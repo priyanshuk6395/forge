@@ -18,5 +18,10 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "ssh2": "^1.15.0"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.6.1",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^4.3.3"
   }
 }
