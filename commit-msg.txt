@@ -1,8 +1,8 @@
-feat: Project Detail view with tabs and TypeScript fixes
+feat: Fix imports and TypeScript config, fix build errors
 
-- Added ProjectDetailView with 4 tabs: Releases, Logs, Secrets, Settings
-- Extracted ReleasesTab and DeploymentStatusPill to separate components
+- Fixed lucide-react imports (removed unused icons)
+- Fixed Card, Dialog imports (removed unused)
 - Fixed TypeScript path aliases in tsconfig.app.json
-- Removed unused imports and fixed type errors
-- Fixed ReleasesTab component in separate file
-- Added DeploymentStatusPill component
+- Removed unused imports in App.tsx
+- Fixed lucide-react imports
+- Fixed TypeScript config for path aliases
