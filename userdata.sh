@@ -3,16 +3,17 @@
 # Forge control-plane bootstrap.
 #
 # Paste this whole file into the EC2 "User data" field when launching an
-# instance (Advanced details → User data), after editing REPO_URL below to
+# instance (Advanced details -> User data), after editing REPO_URL below to
 # point at YOUR public GitHub fork/copy of this repo. On first boot the
 # instance will:
 #   1. install Node.js + git
 #   2. clone your Forge repo into /opt/forge
 #   3. generate this machine's own encryption/session secrets
-#   4. install a systemd service so Forge starts on boot and restarts if it
+#   4. build the React frontend (client/dist -> public/)
+#   5. install a systemd service so Forge starts on boot and restarts if it
 #      ever crashes
-#   5. start Forge on port 80, so visiting the instance's public IP in a
-#      browser takes you straight to the setup wizard — no SSH required.
+#   6. start Forge on port 80, so visiting the instance's public IP in a
+#      browser takes you straight to the setup wizard -- no SSH required.
 #
 # Idempotent: re-running it (e.g. by SSHing in and running
 # `sudo bash /opt/forge/userdata.sh`) pulls the latest commit on REPO_BRANCH
@@ -50,7 +51,7 @@ else
 fi
 
 if [ -d "$APP_DIR/.git" ]; then
-  log "Forge already present — pulling latest ${REPO_BRANCH}..."
+  log "Forge already present - pulling latest ${REPO_BRANCH}..."
   cd "$APP_DIR"
   sudo -u "$SERVICE_USER" git fetch origin "$REPO_BRANCH"
   sudo -u "$SERVICE_USER" git checkout "$REPO_BRANCH"
@@ -63,12 +64,33 @@ else
 fi
 
 cd "$APP_DIR"
-log "Installing dependencies..."
+
+# Install server dependencies (production only)
+log "Installing server dependencies..."
 if [ -f package-lock.json ]; then
   sudo -u "$SERVICE_USER" npm ci --omit=dev
 else
   sudo -u "$SERVICE_USER" npm install --omit=dev
 fi
+
+# Install client dependencies (including dev for build) and build React frontend
+log "Building React frontend..."
+cd "$APP_DIR/client"
+if [ -f package-lock.json ]; then
+  sudo -u "$SERVICE_USER" npm ci
+else
+  sudo -u "$SERVICE_USER" npm install
+fi
+sudo -u "$SERVICE_USER" npm run build
+
+# Copy React build output to public/ for Express static serving
+log "Copying React build to public/..."
+cd "$APP_DIR"
+sudo -u "$SERVICE_USER" rm -rf public
+sudo -u "$SERVICE_USER" cp -r client/dist public
+
+# Back to app root for server setup
+cd "$APP_DIR"
 
 log "Generating this machine's secrets (.env)..."
 sudo -u "$SERVICE_USER" npm run setup
