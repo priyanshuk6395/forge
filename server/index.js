@@ -28,6 +28,11 @@ app.use(cookieParser(process.env.SESSION_SECRET));
 app.use('/webhook', require('./routes/webhooks'));
 app.use('/api/auth', require('./routes/auth'));
 
+// Health check endpoint (no auth required)
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
 // --- Everything past this point requires a logged-in session + the
 // same-origin client header (cheap CSRF mitigation, see auth.js) ---
 app.use('/api', auth.requireAuth, auth.requireXhr);

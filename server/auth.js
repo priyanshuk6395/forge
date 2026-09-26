@@ -114,6 +114,7 @@ module.exports = {
   login,
   createSession,
   destroySession,
+  getSession,
   currentUser,
   requireAuth,
   requireXhr,

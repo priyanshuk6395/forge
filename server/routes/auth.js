@@ -10,10 +10,10 @@ const COOKIE_OPTS = {
   httpOnly: true,
   sameSite: 'lax',
   signed: true,
+  secure: false,
   maxAge: 30 * 24 * 60 * 60 * 1000,
-  // `secure` is left off deliberately: this MVP serves plain HTTP by default
-  // (Section 9.18 TLS automation is Phase 2). Put a TLS-terminating proxy in
-  // front for anything beyond local/quick use, per the README.
+  // `secure` is false for HTTP; `sameSite: 'lax'` works for same-origin on IP addresses
+  // `domain` is not set to allow cookies on IP addresses and localhost
 };
 
 router.get('/status', (req, res) => {
@@ -21,6 +21,24 @@ router.get('/status', (req, res) => {
   res.json({
     needsSetup: !auth.hasAnyUser(),
     user: user ? { id: user.id, username: user.username, role: user.role } : null,
+  });
+});
+
+// Debug endpoint to diagnose cookie/session issues
+router.get('/debug', (req, res) => {
+  const sid = req.signedCookies && req.signedCookies[auth.SESSION_COOKIE];
+  const session = sid ? auth.getSession(sid) : null;
+  const user = auth.currentUser(req);
+  res.json({
+    cookies: req.cookies,
+    signedCookies: req.signedCookies,
+    sessionId: sid,
+    session: session ? { userId: session.userId, expires: session.expires } : null,
+    user: user ? { id: user.id, username: user.username, role: user.role } : null,
+    headers: {
+      cookie: req.headers.cookie,
+      'x-forge-client': req.headers['x-forge-client'],
+    },
   });
 });
 
