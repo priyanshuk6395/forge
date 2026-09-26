@@ -23,7 +23,7 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 # ---- EDIT THIS ----
-REPO_URL="https://github.com/YOUR_GITHUB_USERNAME/forge.git"
+REPO_URL="https://github.com/priyanshuk6395/forge.git"
 REPO_BRANCH="main"
 # -------------------
 
