@@ -33,8 +33,18 @@ import {
   useConnectGitHub,
   useDisconnectGitHub,
   useSaveAWS,
-  useAudit
+  useAudit,
+  useProject,
+  useDeployProject,
+  useRollbackDeployment,
+  useRestartContainer,
+  useProjectLogs,
+  useProjectSecrets,
+  useUpdateProject,
+  useDeleteProject,
+  useToggleAutoDeploy
 } from '@/api/queries'
+import { ReleasesTab } from '@/components/ProjectDetail/ReleasesTab'
 import { timeAgo } from '@/lib/utils'
 
 const NAV_ITEMS = [
@@ -82,6 +92,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = React.useState(false)
   const [commandPaletteOpen, setCommandPaletteOpen] = React.useState(false)
   const [theme, setTheme] = React.useState<'light' | 'dark'>('dark')
+  const [currentProjectId, setCurrentProjectId] = React.useState<string | null>(null)
   const { toast } = useToast()
 
   const { data: dashboard, isLoading: dashboardLoading } = useDashboard()
@@ -119,11 +130,14 @@ export default function App() {
   }, [])
 
   const renderView = () => {
+    if (currentView === 'project-detail' && currentProjectId) {
+      return <ProjectDetailView projectId={currentProjectId} />
+    }
     switch (currentView) {
       case 'dashboard':
         return <DashboardView data={dashboard} isLoading={dashboardLoading} />
       case 'projects':
-        return <ProjectsView projects={projects} isLoading={projectsLoading} createProject={createProject} />
+        return <ProjectsView projects={projects} isLoading={projectsLoading} createProject={createProject} onOpenProject={setCurrentProjectId} />
       case 'servers':
         return <ServersView servers={servers} isLoading={serversLoading} connectServer={connectServer} provisionServer={provisionServer} testServer={testServer} deleteServer={deleteServer} />
       case 'audit':
@@ -310,7 +324,7 @@ function DashboardView({ data, isLoading }: { data: any; isLoading: boolean }) {
   )
 }
 
-function ProjectsView({ projects, isLoading, createProject }: { projects: any[]; isLoading: boolean; createProject: any }) {
+function ProjectsView({ projects, isLoading, createProject, onOpenProject }: { projects: any[]; isLoading: boolean; createProject: any; onOpenProject: (id: string) => void }) {
   const [newProjectModal, setNewProjectModal] = React.useState(false)
   const [formStep, setFormStep] = React.useState<'repo' | 'config'>('repo')
   const [repos, setRepos] = React.useState<any[]>([])
@@ -435,14 +449,14 @@ function ProjectsView({ projects, isLoading, createProject }: { projects: any[];
             </TableHeader>
             <TableBody>
               {projects?.map((p: any) => (
-                <TableRow key={p.id}>
+                <TableRow key={p.id} onClick={() => onOpenProject(p.id)} className="cursor-pointer hover:bg-[var(--color-surface-raised)]">
                   <TableCell className="font-medium">{p.name}</TableCell>
                   <TableCell className="text-sm text-[var(--color-text-muted)] font-mono">{p.repoFullName}</TableCell>
                   <TableCell>{p.branch}</TableCell>
                   <TableCell><HealthPill state={p.health} /></TableCell>
                   <TableCell className="text-sm text-[var(--color-text-muted)]">{p.lastDeployedAt ? timeAgo(p.lastDeployedAt) : 'Never'}</TableCell>
                   <TableCell>
-                    <Button variant="ghost" size="sm">Open</Button>
+                    <Button variant="ghost" size="sm" onClick={e => { e.stopPropagation(); onOpenProject(p.id); }}>Open</Button>
                   </TableCell>
                 </TableRow>
               ))}
@@ -546,7 +560,303 @@ function ProjectsView({ projects, isLoading, createProject }: { projects: any[];
     </div>
   )
 }
-
+ 
+function ProjectDetailView({ projectId }: { projectId: string }) {
+  const [currentTab, setCurrentTab] = React.useState<'releases' | 'logs' | 'secrets' | 'settings'>('releases')
+  const [rollbackModal, setRollbackModal] = React.useState<{ deployment: any } | null>(null)
+  const [deleteConfirm, setDeleteConfirm] = React.useState(false)
+  const [autoDeployModal, setAutoDeployModal] = React.useState(false)
+  const { toast } = useToast()
+ 
+  const { data: projectData, isLoading, refetch } = useProject(projectId)
+  const project = projectData?.project
+ 
+  const deployMutation = useDeployProject(projectId)
+  const rollbackMutation = useRollbackDeployment(projectId, '')
+  const restartMutation = useRestartContainer(projectId)
+  const { query: secretsQuery, add: addSecret, remove: removeSecret } = useProjectSecrets(projectId)
+  const updateMutation = useUpdateProject(projectId)
+  const deleteMutation = useDeleteProject(projectId)
+  const toggleAutoDeployMutation = useToggleAutoDeploy(projectId, false)
+ 
+  const handleDeploy = async () => {
+    try {
+      await deployMutation.mutateAsync()
+      toast('Deployment started', 'success')
+    } catch (err: any) {
+      toast(err.message, 'error')
+    }
+  }
+ 
+  const handleRollback = async (deploymentId: string) => {
+    try {
+      const rollback = useRollbackDeployment(projectId, deploymentId)
+      await rollback.mutateAsync()
+      toast('Rollback started', 'success')
+    } catch (err: any) {
+      toast(err.message, 'error')
+    }
+  }
+ 
+  const handleRestart = async () => {
+    try {
+      await restartMutation.mutateAsync()
+      toast('Container restarted', 'success')
+    } catch (err: any) {
+      toast(err.message, 'error')
+    }
+  }
+ 
+  const handleAddSecret = async (key: string, value: string) => {
+    try {
+      await addSecret.mutateAsync({ key, value })
+      toast('Secret added. Redeploy to apply.', 'success')
+    } catch (err: any) {
+      toast(err.message, 'error')
+    }
+  }
+ 
+  const handleRemoveSecret = async (key: string) => {
+    try {
+      await removeSecret.mutateAsync(key)
+      toast('Secret removed. Redeploy to apply.', 'success')
+    } catch (err: any) {
+      toast(err.message, 'error')
+    }
+  }
+ 
+  const handleUpdateSettings = async (data: any) => {
+    try {
+      await updateMutation.mutateAsync(data)
+      toast('Settings saved', 'success')
+    } catch (err: any) {
+      toast(err.message, 'error')
+    }
+  }
+ 
+  const handleDeleteProject = async () => {
+    try {
+      await deleteMutation.mutateAsync()
+      toast('Project deleted', 'success')
+      window.location.href = '/projects'
+    } catch (err: any) {
+      toast(err.message, 'error')
+    }
+  }
+ 
+  const handleToggleAutoDeploy = async (enable: boolean) => {
+    try {
+      const toggle = useToggleAutoDeploy(projectId, enable)
+      await toggle.mutateAsync()
+      toast(enable ? 'Auto-deploy enabled' : 'Auto-deploy disabled', 'success')
+    } catch (err: any) {
+      toast(err.message, 'error')
+    }
+  }
+ 
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="health-hero rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-surface)] p-7 h-32" />
+        <Skeleton className="h-40" />
+      </div>
+    )
+  }
+ 
+  if (!project) return null
+ 
+  const latestDeployment = project.currentDeployment
+  const isBuilding = latestDeployment?.status === 'building'
+ 
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-semibold">{project.name}</h2>
+            <p className="text-sm text-[var(--color-text-secondary)] font-mono mt-1">
+              {project.repoFullName} @ {project.branch} → {project.hostPort ? ':' + project.hostPort : '—'}
+            </p>
+          </div>
+          <div className="inline-row items-center gap-3">
+            <HealthPill state={project.health} />
+            <Button onClick={handleDeploy} disabled={deployMutation.isPending || isBuilding}>
+              {deployMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null} Deploy
+            </Button>
+          </div>
+        </CardHeader>
+      </Card>
+ 
+      <Tabs value={currentTab} onValueChange={setCurrentTab}>
+        <TabsList className="grid w-full grid-cols-4">
+          <TabsTrigger value="releases">Releases</TabsTrigger>
+          <TabsTrigger value="logs">Logs</TabsTrigger>
+          <TabsTrigger value="secrets">Secrets</TabsTrigger>
+          <TabsTrigger value="settings">Settings</TabsTrigger>
+        </TabsList>
+ 
+        <TabsContent value="releases" className="mt-4">
+          <ReleasesTab 
+            project={project} 
+            latestDeployment={latestDeployment}
+            isBuilding={isBuilding}
+            onRollback={handleRollback}
+            refetch={refetch}
+          />
+        </TabsContent>
+ 
+        <TabsContent value="logs" className="mt-4">
+          <LogsTab projectId={projectId} onRestart={handleRestart} />
+        </TabsContent>
+ 
+        <TabsContent value="secrets" className="mt-4">
+          <SecretsTab 
+            projectId={projectId} 
+            secrets={secretsQuery.data?.keys || []}
+            isLoading={secretsQuery.isLoading}
+            onAdd={handleAddSecret}
+            onRemove={handleRemoveSecret}
+          />
+        </TabsContent>
+ 
+        <TabsContent value="settings" className="mt-4">
+          <SettingsTab 
+            project={project}
+            servers={[]}
+            onUpdate={handleUpdateSettings}
+            onDelete={handleDeleteProject}
+            onToggleAutoDeploy={handleToggleAutoDeploy}
+            autoDeploy={project.autoDeploy}
+          />
+        </TabsContent>
+      </Tabs>
+    </div>
+  )
+}
+ 
+function LogsTab({ projectId, onRestart }: any) {
+  const { data, isLoading, refetch } = useProjectLogs(projectId)
+ 
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={onRestart}><RefreshCw className="w-4 h-4 mr-1" /> Restart container</Button>
+          <Button variant="ghost" size="sm" onClick={() => refetch()}>Refresh</Button>
+        </div>
+      </div>
+      <pre className="log-pane text-sm">
+        {isLoading ? 'Loading…' : data?.logs || '(empty)'}
+      </pre>
+    </Card>
+  )
+}
+ 
+function SecretsTab({ projectId, secrets, isLoading, onAdd, onRemove }: any) {
+  const [key, setKey] = React.useState('')
+  const [value, setValue] = React.useState('')
+ 
+  return (
+    <Card>
+      <p className="text-xs text-[var(--color-text-muted)] mb-4">
+        Values are encrypted at rest and never shown again after saving. Redeploy to pick up changes.
+      </p>
+      {isLoading ? (
+        <Skeleton className="h-20" />
+      ) : secrets.length === 0 ? (
+        <p className="text-[var(--color-text-secondary)] text-sm">No environment variables set.</p>
+      ) : (
+        <div className="space-y-2 mb-4">
+          {secrets.map((k: string) => (
+            <div key={k} className="inline-row items-center justify-between p-3 rounded border border-[var(--color-border)] bg-[var(--color-surface-raised)]">
+              <span className="font-mono text-sm">{k} = <span className="text-[var(--color-text-muted)]">••••••••</span></span>
+              <Button variant="ghost" size="sm" onClick={() => { onRemove(k); toast('Removed. Redeploy to apply.', 'success') }}>Remove</Button>
+            </div>
+          ))}
+        </div>
+      )}
+      <form onSubmit={e => { e.preventDefault(); onAdd(key, value); setKey(''); setValue(''); }} className="grid grid-cols-2 gap-3">
+        <Input placeholder="DATABASE_URL" value={key} onChange={e => setKey(e.target.value)} required />
+        <Input type="password" placeholder="value" value={value} onChange={e => setValue(e.target.value)} required />
+        <Button className="col-span-2" type="submit">Save</Button>
+      </form>
+    </Card>
+  )
+}
+ 
+function SettingsTab({ project, servers, onUpdate, onDelete, onToggleAutoDeploy, autoDeploy }: any) {
+  const [formData, setFormData] = React.useState({
+    branch: project.branch,
+    serverId: project.serverId || '',
+    port: project.port || 8080,
+    hostPort: project.hostPort || 8080,
+    healthPath: project.healthPath || '/health',
+    autoHeal: project.autoHeal || false,
+  })
+ 
+  return (
+    <Card>
+      <form onSubmit={e => { e.preventDefault(); onUpdate(formData); }} className="space-y-4">
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label>Branch</Label>
+            <Input value={formData.branch} onChange={e => setFormData(prev => ({ ...prev, branch: e.target.value }))} required />
+          </div>
+          <div className="space-y-2">
+            <Label>Server</Label>
+            <Select value={formData.serverId} onValueChange={v => setFormData(prev => ({ ...prev, serverId: v }))} required>
+              <option value="">—</option>
+              {servers.map((s: any) => <option key={s.id} value={s.id}>{s.name} ({s.host})</option>)}
+            </Select>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label>Container port</Label>
+            <Input type="number" value={formData.port} onChange={e => setFormData(prev => ({ ...prev, port: Number(e.target.value) }))} min={1} max={65535} required />
+          </div>
+          <div className="space-y-2">
+            <Label>Host port</Label>
+            <Input type="number" value={formData.hostPort} onChange={e => setFormData(prev => ({ ...prev, hostPort: Number(e.target.value) }))} min={1} max={65535} required />
+          </div>
+        </div>
+        <div className="space-y-2">
+          <Label>Health check path</Label>
+          <Input value={formData.healthPath} onChange={e => setFormData(prev => ({ ...prev, healthPath: e.target.value }))} placeholder="/health" required />
+        </div>
+        <div className="flex items-center gap-2">
+          <Switch checked={formData.autoHeal} onCheckedChange={c => setFormData(prev => ({ ...prev, autoHeal: c }))} />
+          <Label>Auto-restart on repeated health-check failure</Label>
+        </div>
+        <Button type="submit">Save settings</Button>
+      </form>
+ 
+      <hr className="border-[var(--color-border)] my-4" />
+ 
+      <div className="flex items-center justify-between">
+        <div>
+          <p>{autoDeploy ? 'Auto-deploy is on' : 'Auto-deploy is off'}</p>
+          <p className="text-sm text-[var(--color-text-muted)]">
+            Pushes to "{project.branch}" {autoDeploy ? 'trigger a deploy automatically.' : 'require a manual Deploy click.'}
+          </p>
+        </div>
+        <Button variant={autoDeploy ? 'subtle' : 'primary'} size="sm" onClick={() => onToggleAutoDeploy(!autoDeploy)}>
+          {autoDeploy ? 'Disable' : 'Enable'}
+        </Button>
+      </div>
+ 
+      <hr className="border-[var(--color-border)] my-4" />
+ 
+      <div className="text-red-400">
+        <Button variant="danger" onClick={onDelete}>Delete project</Button>
+        <p className="text-xs text-[var(--color-text-muted)] mt-2">
+          This removes the project from Forge and its release history. The running container on the server is left as-is — stop it manually if needed.
+        </p>
+      </div>
+    </Card>
+  )
+}
+ 
 function ServersView({ servers, isLoading, connectServer, provisionServer, testServer, deleteServer }: any) {
   const [connectModal, setConnectModal] = React.useState(false)
   const [provisionModal, setProvisionModal] = React.useState(false)
