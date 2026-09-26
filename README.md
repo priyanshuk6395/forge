@@ -59,14 +59,42 @@ that's how you update Forge itself.
 
 ---
 
-## Running it any other way
+## Running it locally (development)
 
-Forge is a normal Node.js app, so it also runs anywhere Node runs:
+Forge is a normal Node.js app with a React + TypeScript + Tailwind frontend.
 
+### Backend + Frontend (development)
+```bash
+# Clone your fork
+git clone https://github.com/YOUR_GITHUB_USERNAME/forge.git
+cd forge
+
+# Install server dependencies
+npm install
+
+# Install client dependencies and build frontend
+cd client
+npm install
+npm run build
+cd ..
+
+# Generate secrets
+npm run setup
+
+# Start development servers (both backend and frontend with HMR)
+# Terminal 1: backend API
+npm run dev
+
+# Terminal 2: frontend dev server (Vite)
+cd client && npm run dev
+```
+
+### Production-like local run
 ```bash
 git clone https://github.com/YOUR_GITHUB_USERNAME/forge.git
 cd forge
 npm install
+cd client && npm install && npm run build && cd ..
 npm run setup      # generates .env with this machine's own secrets
 sudo npm start      # binds port 80; use PORT=3000 npm start to avoid sudo
 ```
@@ -129,6 +157,53 @@ bad deploy, a full audit log, and a UI for all of it.
 
 ---
 
+## Frontend Architecture
+
+The Forge UI is a modern React 18 + TypeScript + Tailwind CSS v4 single-page application:
+
+- **Framework**: React 18 + TypeScript + Vite
+- **Styling**: Tailwind CSS v4 with Forge design tokens (CSS variables)
+- **State/Data**: TanStack Query (React Query) for server state, caching, polling
+- **UI Components**: Radix UI primitives + custom components
+- **Forms**: React Hook Form + Zod validation
+- **Icons**: Lucide React
+
+### Project Structure
+```
+forge/
+├── client/                    # React frontend
+│   ├── src/
+│   │   ├── components/        # Reusable UI components
+│   │   │   └── ui/           # Base UI components (Button, Input, Card, etc.)
+│   │   ├── pages/            # Page components (Dashboard, Projects, etc.)
+│   │   ├── api/              # API client & React Query hooks
+│   │   ├── hooks/            # Custom React hooks
+│   │   └── lib/              # Utilities
+│   ├── index.html
+│   └── package.json
+├── public/                    # Built frontend assets (served by Express)
+├── server/                    # Express backend
+├── userdata.sh               # EC2 user data script
+└── package.json              # Server dependencies
+```
+
+### Development Commands
+```bash
+# Start backend dev server (port 80, requires sudo)
+npm run dev
+
+# Start frontend dev server with HMR (port 5173)
+cd client && npm run dev
+
+# Build frontend for production
+cd client && npm run build
+
+# Lint
+npm run lint
+```
+
+---
+
 ## Security notes
 
 - All secrets (GitHub token, AWS keys, per-project env vars, SSH private
@@ -141,14 +216,16 @@ bad deploy, a full audit log, and a UI for all of it.
 - Forge itself has one login (session cookie, scrypt-hashed password) and
   no built-in TLS — see "what's next" above.
 
+---
+
 ## Architecture, in short
 
 ```
 Browser  ──►  Forge (Node/Express, this repo)  ──►  SSH  ──►  target server
-                     │                                            │
-                     ├─ JSON file store (./data/db.json)          ├─ git clone
-                     ├─ GitHub REST API (PAT)                      ├─ gitleaks / trivy
-                     └─ AWS SDK (EC2 provisioning, optional)        └─ docker build && run
+                      │                                            │
+                      ├─ JSON file store (./data/db.json)          ├─ git clone
+                      ├─ GitHub REST API (PAT)                      ├─ gitleaks / trivy
+                      └─ AWS SDK (EC2 provisioning, optional)        └─ docker build && run
 ```
 
 No database server, no message queue, no build cluster — one Node process,
