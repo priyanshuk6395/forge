@@ -1,17 +1,12 @@
-import * as React from 'react'
-import { createContext, useContext, useState, ReactNode } from 'react'
-import { Toast, ToastProps } from './Toast'
+import { createContext, useContext, useState, type ReactNode } from 'react'
+import { Toast } from './Toast'
 
-interface ToastContextValue {
-  toast: (message: string, type?: ToastProps['type']) => void
-}
-
-const ToastContext = createContext<ToastContextValue | null>(null)
+const ToastContext = createContext<{ toast: (message: string, type?: 'default' | 'success' | 'error') => void } | null>(null)
 
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const [toasts, setToasts] = useState<(ToastProps & { id: number })[]>([])
+  const [toasts, setToasts] = useState<Array<{ id: number; message: string; type: 'default' | 'success' | 'error' }>>([])
 
-  const toast = (message: string, type: ToastProps['type'] = 'default') => {
+  const toast = (message: string, type: 'default' | 'success' | 'error' = 'default') => {
     const id = Date.now()
     setToasts((prev) => [...prev, { id, message, type }])
     setTimeout(() => {
@@ -29,7 +24,6 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             message={t.message}
             type={t.type}
             onClose={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))}
-            className="pointer-events-auto"
           />
         ))}
       </div>

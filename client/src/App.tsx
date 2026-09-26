@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { LayoutDashboard, FolderGit2, Server, History, Settings, Menu, X, Command, LogOut, Sun, Moon, Plus, ExternalLink, RefreshCw, Trash2, Key, Zap, Loader2, AlertTriangle } from 'lucide-react'
+import { LayoutDashboard, FolderGit2, Server, History, Settings, Menu, LogOut, Sun, Moon, Plus, ExternalLink, RefreshCw, Trash2, Key, Zap, Loader2, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
@@ -55,7 +55,7 @@ const NAV_ITEMS = [
   { id: 'settings', label: 'Settings', icon: Settings },
 ] as const
 
-type ViewId = typeof NAV_ITEMS[number]['id']
+type ViewId = typeof NAV_ITEMS[number]['id'] | 'project-detail'
 
 function HealthPill({ state }: { state: 'healthy' | 'attention' | 'critical' }) {
   const variants = {
@@ -64,17 +64,6 @@ function HealthPill({ state }: { state: 'healthy' | 'attention' | 'critical' }) 
     critical: 'danger' as const,
   }
   return <Badge variant={variants[state]}>{state.charAt(0).toUpperCase() + state.slice(1)}</Badge>
-}
-
-function DeploymentStatusPill({ status }: { status: string }) {
-  const variants: Record<string, 'success' | 'warning' | 'danger' | 'neutral'> = {
-    success: 'success',
-    healthy: 'success',
-    building: 'warning',
-    failed: 'danger',
-    blocked: 'danger',
-  }
-  return <Badge variant={variants[status] || 'neutral'}>{status}</Badge>
 }
 
 function ServerStatusPill({ status }: { status: string }) {
@@ -90,15 +79,22 @@ function ServerStatusPill({ status }: { status: string }) {
 export default function App() {
   const [currentView, setCurrentView] = React.useState<ViewId>('dashboard')
   const [sidebarOpen, setSidebarOpen] = React.useState(false)
-  const [commandPaletteOpen, setCommandPaletteOpen] = React.useState(false)
   const [theme, setTheme] = React.useState<'light' | 'dark'>('dark')
   const [currentProjectId, setCurrentProjectId] = React.useState<string | null>(null)
   const { toast } = useToast()
 
   const { data: dashboard, isLoading: dashboardLoading } = useDashboard()
-  const { data: projects, isLoading: projectsLoading, createProject } = useProjects()
-  const { data: servers, isLoading: serversLoading, connectServer, provisionServer, testServer, deleteServer } = useServers()
-  const { data: settings, isLoading: settingsLoading, connectGitHub, disconnectGitHub, saveAWS } = useSettings()
+  const { data: projects, isLoading: projectsLoading } = useProjects()
+  const createProject = useCreateProject()
+  const { data: servers, isLoading: serversLoading } = useServers()
+  const connectServer = useConnectServer()
+  const provisionServer = useProvisionServer()
+  const testServer = useTestServer()
+  const deleteServer = useDeleteServer()
+  const { data: settings, isLoading: settingsLoading } = useSettings()
+  const connectGitHub = useConnectGitHub()
+  const disconnectGitHub = useDisconnectGitHub()
+  const saveAWS = useSaveAWS()
   const { data: audit, isLoading: auditLoading } = useAudit()
 
   React.useEffect(() => {
@@ -117,12 +113,8 @@ export default function App() {
 
   React.useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault()
-        setCommandPaletteOpen(true)
-      }
       if (e.key === 'Escape') {
-        setCommandPaletteOpen(false)
+        // Close any open modals/panels on Escape
       }
     }
     window.addEventListener('keydown', handler)
@@ -137,11 +129,11 @@ export default function App() {
       case 'dashboard':
         return <DashboardView data={dashboard} isLoading={dashboardLoading} />
       case 'projects':
-        return <ProjectsView projects={projects} isLoading={projectsLoading} createProject={createProject} onOpenProject={setCurrentProjectId} />
+        return <ProjectsView projects={projects ?? []} isLoading={projectsLoading} createProject={createProject} onOpenProject={setCurrentProjectId} />
       case 'servers':
-        return <ServersView servers={servers} isLoading={serversLoading} connectServer={connectServer} provisionServer={provisionServer} testServer={testServer} deleteServer={deleteServer} />
+        return <ServersView servers={servers ?? []} isLoading={serversLoading} connectServer={connectServer} provisionServer={provisionServer} testServer={testServer} deleteServer={deleteServer} />
       case 'audit':
-        return <AuditView data={audit} isLoading={auditLoading} />
+        return <AuditView data={audit ?? []} isLoading={auditLoading} />
       case 'settings':
         return <SettingsView settings={settings} isLoading={settingsLoading} connectGitHub={connectGitHub} disconnectGitHub={disconnectGitHub} saveAWS={saveAWS} />
       default:
@@ -223,13 +215,6 @@ export default function App() {
             </div>
           </div>
           <div className="topbar-actions flex items-center gap-2">
-            <button
-              onClick={() => setCommandPaletteOpen(true)}
-              className="palette-trigger flex items-center gap-2 px-2.5 py-1.5 rounded-[7px] border border-[var(--color-border)] text-[var(--color-text-muted)] text-sm bg-[var(--color-surface-raised)] cursor-pointer"
-            >
-              <Command className="w-4 h-4" />
-              <span className="hidden sm:inline label">Jump to…</span>
-            </button>
             <Badge variant="neutral">User</Badge>
           </div>
         </header>
@@ -325,6 +310,7 @@ function DashboardView({ data, isLoading }: { data: any; isLoading: boolean }) {
 }
 
 function ProjectsView({ projects, isLoading, createProject, onOpenProject }: { projects: any[]; isLoading: boolean; createProject: any; onOpenProject: (id: string) => void }) {
+  const { toast } = useToast()
   const [newProjectModal, setNewProjectModal] = React.useState(false)
   const [formStep, setFormStep] = React.useState<'repo' | 'config'>('repo')
   const [repos, setRepos] = React.useState<any[]>([])
@@ -344,11 +330,12 @@ function ProjectsView({ projects, isLoading, createProject, onOpenProject }: { p
   })
   const [loadingRepos, setLoadingRepos] = React.useState(false)
   const [loadingBranches, setLoadingBranches] = React.useState(false)
-  const [loadingDetect, setLoadingDetect] = React.useState(false)
+  const [_loadingDetect, setLoadingDetect] = React.useState(false)
 
   const { data: servers } = useServers()
 
-  const handleRepoChange = async (repoFullName: string) => {
+  const handleRepoChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const repoFullName = e.target.value
     const repo = repos.find(r => r.fullName === repoFullName)
     setSelectedRepo(repo)
     setFormData(prev => ({ ...prev, name: repo?.fullName.split('/')[1] || '', repoFullName, repoPrivate: repo?.private || false }))
@@ -369,7 +356,8 @@ function ProjectsView({ projects, isLoading, createProject, onOpenProject }: { p
     }
   }
 
-  const handleBranchChange = async (branch: string) => {
+  const handleBranchChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const branch = e.target.value
     setFormData(prev => ({ ...prev, branch }))
     setDetect(null)
     if (selectedRepo) {
@@ -480,7 +468,7 @@ function ProjectsView({ projects, isLoading, createProject, onOpenProject }: { p
                   {loadingRepos ? (
                     <Input placeholder="Loading…" disabled />
                   ) : (
-                    <Select value={formData.repoFullName} onValueChange={handleRepoChange}>
+                    <Select value={formData.repoFullName} onChange={handleRepoChange}>
                       <option value="">Select a repository…</option>
                       {repos.map((r: any) => (
                         <option key={r.fullName} value={r.fullName}>
@@ -493,7 +481,7 @@ function ProjectsView({ projects, isLoading, createProject, onOpenProject }: { p
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label>Branch</Label>
-                    <Select value={formData.branch} onValueChange={handleBranchChange} disabled={!formData.repoFullName || loadingBranches}>
+                    <Select value={formData.branch} onChange={handleBranchChange} disabled={!formData.repoFullName || loadingBranches}>
                       <option value="">—</option>
                       {branches.map((b: string) => (
                         <option key={b} value={b}>{b}</option>
@@ -535,7 +523,7 @@ function ProjectsView({ projects, isLoading, createProject, onOpenProject }: { p
                 </div>
                 <div className="space-y-2">
                   <Label>Deploy to server</Label>
-                  <Select value={formData.serverId} onValueChange={v => setFormData(prev => ({ ...prev, serverId: v }))} required>
+                  <Select value={formData.serverId} onChange={e => setFormData(prev => ({ ...prev, serverId: e.target.value }))} required>
                     <option value="">Select a server…</option>
                     {servers?.map((s: any) => (
                       <option key={s.id} value={s.id}>{s.name} ({s.host})</option>
@@ -543,7 +531,7 @@ function ProjectsView({ projects, isLoading, createProject, onOpenProject }: { p
                   </Select>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Switch checked={formData.autoHeal} onCheckedChange={c => setFormData(prev => ({ ...prev, autoHeal: c }))} />
+                  <Switch checked={formData.autoHeal} onChange={e => setFormData(prev => ({ ...prev, autoHeal: e.target.checked }))} />
                   <Label>Auto-restart on repeated health-check failure</Label>
                 </div>
                 <div className="flex justify-end gap-2 pt-4">
@@ -563,14 +551,11 @@ function ProjectsView({ projects, isLoading, createProject, onOpenProject }: { p
  
 function ProjectDetailView({ projectId }: { projectId: string }) {
   const [currentTab, setCurrentTab] = React.useState<'releases' | 'logs' | 'secrets' | 'settings'>('releases')
-  const [rollbackModal, setRollbackModal] = React.useState<{ deployment: any } | null>(null)
-  const [deleteConfirm, setDeleteConfirm] = React.useState(false)
-  const [autoDeployModal, setAutoDeployModal] = React.useState(false)
   const { toast } = useToast()
- 
-  const { data: projectData, isLoading, refetch } = useProject(projectId)
+  
+  const { data: projectData, isLoading } = useProject(projectId)
   const project = projectData?.project
- 
+  
   const deployMutation = useDeployProject(projectId)
   const rollbackMutation = useRollbackDeployment(projectId, '')
   const restartMutation = useRestartContainer(projectId)
@@ -578,7 +563,7 @@ function ProjectDetailView({ projectId }: { projectId: string }) {
   const updateMutation = useUpdateProject(projectId)
   const deleteMutation = useDeleteProject(projectId)
   const toggleAutoDeployMutation = useToggleAutoDeploy(projectId, false)
- 
+  
   const handleDeploy = async () => {
     try {
       await deployMutation.mutateAsync()
@@ -587,17 +572,16 @@ function ProjectDetailView({ projectId }: { projectId: string }) {
       toast(err.message, 'error')
     }
   }
- 
-  const handleRollback = async (deploymentId: string) => {
+  
+  const handleRollback = async (_deploymentId: string) => {
     try {
-      const rollback = useRollbackDeployment(projectId, deploymentId)
-      await rollback.mutateAsync()
+      await rollbackMutation.mutateAsync()
       toast('Rollback started', 'success')
     } catch (err: any) {
       toast(err.message, 'error')
     }
   }
- 
+  
   const handleRestart = async () => {
     try {
       await restartMutation.mutateAsync()
@@ -606,7 +590,7 @@ function ProjectDetailView({ projectId }: { projectId: string }) {
       toast(err.message, 'error')
     }
   }
- 
+  
   const handleAddSecret = async (key: string, value: string) => {
     try {
       await addSecret.mutateAsync({ key, value })
@@ -615,7 +599,7 @@ function ProjectDetailView({ projectId }: { projectId: string }) {
       toast(err.message, 'error')
     }
   }
- 
+  
   const handleRemoveSecret = async (key: string) => {
     try {
       await removeSecret.mutateAsync(key)
@@ -624,7 +608,7 @@ function ProjectDetailView({ projectId }: { projectId: string }) {
       toast(err.message, 'error')
     }
   }
- 
+  
   const handleUpdateSettings = async (data: any) => {
     try {
       await updateMutation.mutateAsync(data)
@@ -633,7 +617,7 @@ function ProjectDetailView({ projectId }: { projectId: string }) {
       toast(err.message, 'error')
     }
   }
- 
+  
   const handleDeleteProject = async () => {
     try {
       await deleteMutation.mutateAsync()
@@ -643,11 +627,10 @@ function ProjectDetailView({ projectId }: { projectId: string }) {
       toast(err.message, 'error')
     }
   }
- 
+  
   const handleToggleAutoDeploy = async (enable: boolean) => {
     try {
-      const toggle = useToggleAutoDeploy(projectId, enable)
-      await toggle.mutateAsync()
+      await toggleAutoDeployMutation.mutateAsync()
       toast(enable ? 'Auto-deploy enabled' : 'Auto-deploy disabled', 'success')
     } catch (err: any) {
       toast(err.message, 'error')
@@ -687,7 +670,7 @@ function ProjectDetailView({ projectId }: { projectId: string }) {
         </CardHeader>
       </Card>
  
-      <Tabs value={currentTab} onValueChange={setCurrentTab}>
+      <Tabs value={currentTab} onValueChange={(value: string) => setCurrentTab(value as 'releases' | 'logs' | 'secrets' | 'settings')}>
         <TabsList className="grid w-full grid-cols-4">
           <TabsTrigger value="releases">Releases</TabsTrigger>
           <TabsTrigger value="logs">Logs</TabsTrigger>
@@ -701,7 +684,6 @@ function ProjectDetailView({ projectId }: { projectId: string }) {
             latestDeployment={latestDeployment}
             isBuilding={isBuilding}
             onRollback={handleRollback}
-            refetch={refetch}
           />
         </TabsContent>
  
@@ -752,7 +734,8 @@ function LogsTab({ projectId, onRestart }: any) {
   )
 }
  
-function SecretsTab({ projectId, secrets, isLoading, onAdd, onRemove }: any) {
+function SecretsTab({ secrets, isLoading, onAdd, onRemove }: any) {
+  const { toast } = useToast()
   const [key, setKey] = React.useState('')
   const [value, setValue] = React.useState('')
  
@@ -804,7 +787,7 @@ function SettingsTab({ project, servers, onUpdate, onDelete, onToggleAutoDeploy,
           </div>
           <div className="space-y-2">
             <Label>Server</Label>
-            <Select value={formData.serverId} onValueChange={v => setFormData(prev => ({ ...prev, serverId: v }))} required>
+            <Select value={formData.serverId} onChange={e => setFormData(prev => ({ ...prev, serverId: e.target.value }))} required>
               <option value="">—</option>
               {servers.map((s: any) => <option key={s.id} value={s.id}>{s.name} ({s.host})</option>)}
             </Select>
@@ -825,7 +808,7 @@ function SettingsTab({ project, servers, onUpdate, onDelete, onToggleAutoDeploy,
           <Input value={formData.healthPath} onChange={e => setFormData(prev => ({ ...prev, healthPath: e.target.value }))} placeholder="/health" required />
         </div>
         <div className="flex items-center gap-2">
-          <Switch checked={formData.autoHeal} onCheckedChange={c => setFormData(prev => ({ ...prev, autoHeal: c }))} />
+          <Switch checked={formData.autoHeal} onChange={e => setFormData(prev => ({ ...prev, autoHeal: e.target.checked }))} />
           <Label>Auto-restart on repeated health-check failure</Label>
         </div>
         <Button type="submit">Save settings</Button>
@@ -858,6 +841,7 @@ function SettingsTab({ project, servers, onUpdate, onDelete, onToggleAutoDeploy,
 }
  
 function ServersView({ servers, isLoading, connectServer, provisionServer, testServer, deleteServer }: any) {
+  const { toast } = useToast()
   const [connectModal, setConnectModal] = React.useState(false)
   const [provisionModal, setProvisionModal] = React.useState(false)
   const [connectForm, setConnectForm] = React.useState({ name: '', host: '', sshUser: 'ubuntu', sshPort: 22, privateKey: '' })
@@ -967,7 +951,7 @@ function ServersView({ servers, isLoading, connectServer, provisionServer, testS
           </DialogHeader>
           <div className="space-y-4">
             <Input label="Name" placeholder="production" value={provisionForm.name} onChange={e => setProvisionForm(prev => ({ ...prev, name: e.target.value }))} required />
-            <Select label="Instance type" value={provisionForm.instanceType} onValueChange={v => setProvisionForm(prev => ({ ...prev, instanceType: v }))}>
+            <Select label="Instance type" value={provisionForm.instanceType} onChange={e => setProvisionForm(prev => ({ ...prev, instanceType: e.target.value }))}>
               <option value="t3.micro">t3.micro</option>
               <option value="t3.small">t3.small</option>
               <option value="t3.medium">t3.medium</option>
@@ -992,6 +976,7 @@ function ServersView({ servers, isLoading, connectServer, provisionServer, testS
 }
 
 function SettingsView({ settings, isLoading, connectGitHub, disconnectGitHub, saveAWS }: any) {
+  const { toast } = useToast()
   const [awsForm, setAwsForm] = React.useState({ accessKeyId: '', secretAccessKey: '', region: '' })
 
   if (isLoading) return <Card><Skeleton className="h-40" /></Card>

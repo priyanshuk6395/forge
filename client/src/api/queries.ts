@@ -5,12 +5,8 @@ import type {
   Project,
   ProjectDetail,
   Server,
-  SettingsData,
-  AuditEvent,
   NewProjectForm,
   GitHubRepo,
-  GitHubBranch,
-  GitHubDetect,
   ConnectServerForm,
   ProvisionServerForm,
   SecretForm,
@@ -60,7 +56,7 @@ export function useProject(projectId: string) {
 export function useDeployProject(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: () => api.post<{ deployment: { number: number; id: string } }>(`/projects/${projectId}/deploy`),
+    mutationFn: () => api.post<{ deployment: { number: number; id: string } }>(`/projects/${projectId}/deploy`, {}),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['project', projectId] })
     },
@@ -70,7 +66,7 @@ export function useDeployProject(projectId: string) {
 export function useRollbackDeployment(projectId: string, deploymentId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: () => api.post<{ deployment: { number: number; id: string } }>(`/projects/${projectId}/deployments/${deploymentId}/rollback`),
+    mutationFn: () => api.post<{ deployment: { number: number; id: string } }>(`/projects/${projectId}/deployments/${deploymentId}/rollback`, {}),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['project', projectId] })
     },
@@ -80,7 +76,7 @@ export function useRollbackDeployment(projectId: string, deploymentId: string) {
 export function useRestartContainer(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: () => api.post<void>(`/projects/${projectId}/restart`),
+    mutationFn: () => api.post<void>(`/projects/${projectId}/restart`, {}),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['project', projectId] })
     },
@@ -135,7 +131,7 @@ export function useDeleteProject(projectId: string) {
 export function useToggleAutoDeploy(projectId: string, enable: boolean) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: () => api[enable ? 'post' : 'delete']<void>(`/projects/${projectId}/webhook`),
+    mutationFn: () => api[enable ? 'post' : 'delete']<void>(`/projects/${projectId}/webhook`, {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['project', projectId] }),
   })
 }
@@ -148,9 +144,9 @@ export function useServers() {
   })
 }
 
-export function useTestServer(serverId: string) {
+export function useTestServer() {
   return useMutation({
-    mutationFn: () => api.post<{ success: boolean }>(`/servers/${serverId}/test`),
+    mutationFn: (serverId: string) => api.post<{ success: boolean }>(`/servers/${serverId}/test`, {}),
   })
 }
 
@@ -170,10 +166,10 @@ export function useProvisionServer() {
   })
 }
 
-export function useDeleteServer(serverId: string) {
+export function useDeleteServer() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: () => api.delete<void>(`/servers/${serverId}`, { confirm: true }),
+    mutationFn: (serverId: string) => api.delete<void>(`/servers/${serverId}`, { confirm: true }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['servers'] }),
   })
 }
@@ -214,7 +210,7 @@ export function useSaveAWS() {
   })
 }
 
-// GitHub - React hooks
+// GitHub
 export function useGitHubRepos() {
   return useQuery({
     queryKey: ['github', 'repos'],
@@ -233,7 +229,7 @@ export function useGitHubBranches(owner: string, repo: string) {
 export function useGitHubDetect(owner: string, repo: string, branch: string) {
   return useQuery({
     queryKey: ['github', 'detect', owner, repo, branch],
-    queryFn: () => api.get<GitHubDetect>(`/github/repos/${owner}/${repo}/detect?branch=${encodeURIComponent(branch)}`),
+    queryFn: () => api.get<{ hasDockerfile: boolean; language?: string }>(`/github/repos/${owner}/${repo}/detect?branch=${encodeURIComponent(branch)}`),
     enabled: !!owner && !!repo && !!branch,
   })
 }
@@ -249,15 +245,15 @@ export async function fetchGitHubBranches(owner: string, repo: string): Promise<
   return branches
 }
 
-export async function fetchGitHubDetect(owner: string, repo: string, branch: string): Promise<GitHubDetect> {
-  return api.get<GitHubDetect>(`/github/repos/${owner}/${repo}/detect?branch=${encodeURIComponent(branch)}`)
+export async function fetchGitHubDetect(owner: string, repo: string, branch: string) {
+  return api.get<{ hasDockerfile: boolean; language?: string }>(`/github/repos/${owner}/${repo}/detect?branch=${encodeURIComponent(branch)}`)
 }
 
 // Audit
 export function useAudit() {
   return useQuery({
     queryKey: ['audit'],
-    queryFn: () => api.get<AuditEvent[]>('/audit'),
+    queryFn: () => api.get<{ ts: string; actor: string; action: string; result: 'success' | 'danger' }[]>('/audit'),
     staleTime: 120_000,
   })
 }
