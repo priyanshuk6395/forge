@@ -31,4 +31,4 @@ fi
 
 echo ""
 echo "If any checks fail, run full diagnostic:"
-echo "  bash -c \"\$(curl -sSL https://raw.githubusercontent.com/USER/forge/main/diagnose-ec2.sh)\""
+echo "  bash -c \"\$(curl -sSL https://raw.githubusercontent.com/priyanshuk6395/forge/main/diagnose-ec2.sh)\""
