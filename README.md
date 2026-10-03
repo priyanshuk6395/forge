@@ -64,44 +64,86 @@ that's how you update Forge itself.
 Forge is a normal Node.js app with a React + TypeScript + Tailwind frontend.
 
 ### Backend + Frontend (development)
-```bash
+```powershell
 # Clone your fork
 git clone https://github.com/YOUR_GITHUB_USERNAME/forge.git
 cd forge
 
-# Install server dependencies
+# Install server and client dependencies
 npm install
-
-# Install client dependencies and build frontend
-cd client
+Push-Location client
 npm install
-npm run build
-cd ..
+Pop-Location
 
 # Generate secrets
 npm run setup
 
-# Start development servers (both backend and frontend with HMR)
-# Terminal 1: backend API
-npm run dev
+# Terminal 1: backend API (PowerShell)
+$env:PORT='3000'
+npm start
 
-# Terminal 2: frontend dev server (Vite)
-cd client && npm run dev
+# Terminal 2: frontend dev server (Vite; proxies /api to port 3000)
+Push-Location client
+npm run dev
 ```
 
+instead of `cd client && npm run dev` if your shell does not accept `&&`.
+Open the Vite URL printed in Terminal 2. The first visit shows the owner
+account setup screen. Leave Terminal 2 running while using the app.
+
 ### Production-like local run
-```bash
+```powershell
 git clone https://github.com/YOUR_GITHUB_USERNAME/forge.git
 cd forge
 npm install
-cd client && npm install && npm run build && cd ..
-npm run setup      # generates .env with this machine's own secrets
-sudo npm start      # binds port 80; use PORT=3000 npm start to avoid sudo
+Push-Location client
+npm install
+npm run build
+Pop-Location
+npm run setup
+npm start
 ```
 
-Requirements: Node.js 18+. That's the only hard dependency for Forge itself.
-(Docker is only required on the *target* servers Forge deploys onto — see
-below — not on the box running Forge.)
+The production-like server uses the `PORT` value in `.env` (default `80`);
+set `$env:PORT='3000'` in PowerShell before `npm start` to run without
+elevated permissions. The client toolchain requires Node.js 20.19+ (or
+22.12+); the Express server itself supports Node.js 18+. Docker is only
+needed locally for the AWS emulator described below and on target servers
+Forge deploys to.
+
+### Local EC2 API testing (Moto)
+
+Forge can point its AWS SDK at a local EC2-compatible endpoint. The included
+Compose service runs Moto, which lets you test the AWS connection check and
+exercise EC2 API calls without AWS credentials or cloud resources:
+
+```powershell
+docker compose up -d aws-mock
+docker compose ps
+```
+
+Start the backend in a separate PowerShell terminal with dummy credentials
+(Moto accepts any values; do not put real AWS credentials here):
+
+```powershell
+$env:PORT='3000'
+$env:AWS_REGION='us-east-1'
+$env:AWS_ACCESS_KEY_ID='test'
+$env:AWS_SECRET_ACCESS_KEY='test'
+$env:FORGE_AWS_ENDPOINT_URL='http://127.0.0.1:5000'
+npm start
+```
+
+Start the Vite client as above, create the owner account, then use
+**Settings → AWS → Test connection**. The endpoint and region are shown in
+Settings. `FORGE_AWS_AMI_ID` can select a mock AMI when exercising EC2 launch
+API calls; Moto does not boot an operating system, provide a working guest
+SSH server, or run Forge's remote bootstrap/deploy flow. Those workflows need
+a real EC2 instance or an SSH-accessible Linux server.
+
+Stop the emulator with `docker compose down`. It stores mock state in the
+container's memory, so resources created during a test do not persist after
+the container is removed.
 
 ---
 
@@ -159,9 +201,9 @@ bad deploy, a full audit log, and a UI for all of it.
 
 ## Frontend Architecture
 
-The Forge UI is a modern React 18 + TypeScript + Tailwind CSS v4 single-page application:
+The Forge UI is a modern React 19 + TypeScript + Tailwind CSS v4 single-page application:
 
-- **Framework**: React 18 + TypeScript + Vite
+- **Framework**: React 19 + TypeScript + Vite
 - **Styling**: Tailwind CSS v4 with Forge design tokens (CSS variables)
 - **State/Data**: TanStack Query (React Query) for server state, caching, polling
 - **UI Components**: Radix UI primitives + custom components
@@ -180,26 +222,32 @@ forge/
 │   │   ├── hooks/            # Custom React hooks
 │   │   └── lib/              # Utilities
 │   ├── index.html
-│   └── package.json
-├── public/                    # Built frontend assets (served by Express)
+│   ├── package.json
+│   └── dist/                  # Generated build output (ignored by Git)
 ├── server/                    # Express backend
 ├── userdata.sh               # EC2 user data script
 └── package.json              # Server dependencies
 ```
 
 ### Development Commands
-```bash
-# Start backend dev server (port 80, requires sudo)
+```powershell
+# Start the backend (set PORT=3000 first for an unprivileged local port)
+$env:PORT='3000'
+npm start
+
+# Start the frontend dev server with HMR (port 5173)
+Push-Location client
 npm run dev
 
-# Start frontend dev server with HMR (port 5173)
-cd client && npm run dev
-
 # Build frontend for production
-cd client && npm run build
+Push-Location client
+npm run build
+Pop-Location
 
-# Lint
+# Lint the frontend
+Push-Location client
 npm run lint
+Pop-Location
 ```
 
 ---
@@ -213,6 +261,9 @@ npm run lint
   command (slugs, branch names, ports, env var names) before it's used.
 - Target servers get `ufw` (deny-by-default, SSH + HTTP/S allowed),
   automatic security updates, and password SSH auth disabled.
+- The session cookie is `HttpOnly`, host-only, and `SameSite=Lax`. It is
+  marked `Secure` for HTTPS requests, including TLS terminated by a trusted
+  reverse proxy; the direct HTTP EC2 user-data setup remains compatible.
 - Forge itself has one login (session cookie, scrypt-hashed password) and
   no built-in TLS — see "what's next" above.
 

@@ -1,3 +1,4 @@
+// client/src/lib/utils.ts
 import { clsx, type ClassValue } from 'clsx'
 
 export function cn(...inputs: ClassValue[]) {
@@ -6,7 +7,9 @@ export function cn(...inputs: ClassValue[]) {
 
 export function timeAgo(iso: string | null | undefined): string {
   if (!iso) return '\u2014'
-  const diff = Date.now() - new Date(iso).getTime()
+  const ts = new Date(iso).getTime()
+  if (Number.isNaN(ts)) return '\u2014'
+  const diff = Math.max(0, Date.now() - ts)
   const s = Math.floor(diff / 1000)
   if (s < 5) return 'just now'
   if (s < 60) return `${s}s ago`
@@ -21,11 +24,11 @@ export function timeAgo(iso: string | null | undefined): string {
 
 export function escapeHtml(s: string): string {
   const map: Record<string, string> = {
-    '&': '&',
-    '<': '<',
-    '>': '>',
-    '"': '"',
-    "'": "\u2019",
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
   }
   return s.replace(/[&<>"']/g, (c) => map[c] || c)
 }

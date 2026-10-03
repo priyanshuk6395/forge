@@ -9,7 +9,7 @@
 #   1. install Node.js + git
 #   2. clone your Forge repo into /opt/forge
 #   3. generate this machine's own encryption/session secrets
-#   4. build the React frontend (client/dist -> public/)
+#   4. build the React frontend into client/dist/
 #   5. install a systemd service so Forge starts on boot and restarts if it
 #      ever crashes
 #   6. start Forge on port 80, so visiting the instance's public IP in a
@@ -82,12 +82,6 @@ else
   sudo -u "$SERVICE_USER" npm install
 fi
 sudo -u "$SERVICE_USER" npm run build
-
-# Copy React build output to public/ for Express static serving
-log "Copying React build to public/..."
-cd "$APP_DIR"
-sudo -u "$SERVICE_USER" rm -rf public
-sudo -u "$SERVICE_USER" cp -r client/dist public
 
 # Back to app root for server setup
 cd "$APP_DIR"

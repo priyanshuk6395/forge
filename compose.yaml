@@ -1,0 +1,6 @@
+services:
+  aws-mock:
+    image: motoserver/moto:5.1.11
+    command: ["-H", "0.0.0.0", "-p", "5000"]
+    ports:
+      - "5000:5000"

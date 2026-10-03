@@ -24,22 +24,33 @@ function getRegion() {
   return db.get().settings.awsRegion || process.env.AWS_REGION || 'ap-south-1';
 }
 
+function getEndpoint() {
+  return process.env.FORGE_AWS_ENDPOINT_URL || process.env.AWS_ENDPOINT_URL || null;
+}
+
 // Uses explicit keys from Settings if present; otherwise falls back to the
 // default provider chain, which picks up an EC2 instance profile automatically
 // when Forge itself is running on an EC2 instance with one attached.
 function makeClient() {
   const settings = db.get().settings;
   const region = getRegion();
+  const endpoint = getEndpoint();
+  const clientOptions = {
+    region,
+    ...(endpoint
+      ? { endpoint, systemClockOffset: 0, disableClockSkewCorrection: async () => true }
+      : {}),
+  };
   if (settings.awsAccessKeyIdEnc && settings.awsSecretAccessKeyEnc) {
     return new EC2Client({
-      region,
+      ...clientOptions,
       credentials: {
         accessKeyId: decrypt(settings.awsAccessKeyIdEnc),
         secretAccessKey: decrypt(settings.awsSecretAccessKeyEnc),
       },
     });
   }
-  return new EC2Client({ region });
+  return new EC2Client(clientOptions);
 }
 
 async function isConfigured() {
@@ -53,6 +64,12 @@ async function isConfigured() {
 }
 
 async function findLatestUbuntuAmi(client) {
+  const localAmiId = process.env.FORGE_AWS_AMI_ID;
+  if (localAmiId && getEndpoint()) {
+    if (!/^ami-[a-f0-9]+$/i.test(localAmiId)) throw new Error('Invalid local AMI ID.');
+    return localAmiId;
+  }
+
   const res = await client.send(
     new DescribeImagesCommand({
       Owners: [CANONICAL_OWNER_ID],
@@ -68,6 +85,11 @@ async function findLatestUbuntuAmi(client) {
   );
   if (!images.length) throw new Error('Could not find an Ubuntu 22.04 AMI in this region.');
   return images[0].ImageId;
+}
+
+async function checkConnection() {
+  await makeClient().send(new DescribeVpcsCommand({ MaxResults: 1 }));
+  return true;
 }
 
 async function getDefaultNetworking(client) {
@@ -228,8 +250,10 @@ async function provisionServer({ name, instanceType = 't3.micro', sshCidr, appPo
 
 module.exports = {
   getRegion,
+  getEndpoint,
   makeClient,
   isConfigured,
+  checkConnection,
   provisionServer,
   describeInstance,
   terminateInstance,

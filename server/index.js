@@ -12,7 +12,7 @@ const monitor = require('./monitor');
 
 const app = express();
 app.disable('x-powered-by');
-app.set('trust proxy', true); // correct req.protocol/host if a proxy/load balancer sits in front
+app.set('trust proxy', 1); // correct req.protocol/host if a proxy/load balancer sits in front
 
 app.use(
   express.json({
@@ -44,7 +44,7 @@ app.use('/api/audit', require('./routes/audit'));
 app.use('/api/dashboard', require('./routes/dashboard'));
 
 // --- Static UI + SPA fallback ---
-const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const PUBLIC_DIR = path.join(__dirname, '..', 'client', 'dist');
 app.use(express.static(PUBLIC_DIR));
 app.get(/^(?!\/api|\/webhook).*/, (req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, 'index.html'));

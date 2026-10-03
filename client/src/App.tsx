@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { LayoutDashboard, FolderGit2, Server, History, Settings, Menu, LogOut, Sun, Moon, Plus, ExternalLink, RefreshCw, Trash2, Key, Zap, Loader2, AlertTriangle } from 'lucide-react'
+import { Activity, ArrowLeft, ArrowRight, LayoutDashboard, FolderGit2, Server, History, Settings, Menu, LogOut, Sun, Moon, Plus, ExternalLink, RefreshCw, Trash2, Key, Zap, Loader2, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
@@ -18,6 +18,10 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/DropdownMenu'
 import { useToast } from '@/components/ui/Toaster'
 import { 
+  useAuthStatus,
+  useCreateOwner,
+  useLogin,
+  useLogout,
   useDashboard,
   useProjects,
   useCreateProject,
@@ -33,16 +37,17 @@ import {
   useConnectGitHub,
   useDisconnectGitHub,
   useSaveAWS,
+  useTestAWS,
   useAudit,
-  useProject,
-  useDeployProject,
-  useRollbackDeployment,
+  useProjectDetail,
+  useTriggerDeploy,
+  useRollbackProject,
   useRestartContainer,
   useProjectLogs,
   useProjectSecrets,
-  useUpdateProject,
+  useUpdateProjectSettings,
   useDeleteProject,
-  useToggleAutoDeploy
+  useToggleWebhook
 } from '@/api/queries'
 import { ReleasesTab } from '@/components/ProjectDetail/ReleasesTab'
 import { timeAgo } from '@/lib/utils'
@@ -79,30 +84,39 @@ function ServerStatusPill({ status }: { status: string }) {
 export default function App() {
   const [currentView, setCurrentView] = React.useState<ViewId>('dashboard')
   const [sidebarOpen, setSidebarOpen] = React.useState(false)
-  const [theme, setTheme] = React.useState<'light' | 'dark'>('dark')
+  const [theme, setTheme] = React.useState<'light' | 'dark'>(() => {
+    if (typeof window === 'undefined') return 'dark'
+    const saved = localStorage.getItem('forge-theme')
+    if (saved === 'light' || saved === 'dark') return saved
+    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+  })
   const [currentProjectId, setCurrentProjectId] = React.useState<string | null>(null)
   const { toast } = useToast()
 
-  const { data: dashboard, isLoading: dashboardLoading } = useDashboard()
-  const { data: projects, isLoading: projectsLoading } = useProjects()
+  const authStatus = useAuthStatus()
+  const createOwner = useCreateOwner()
+  const login = useLogin()
+  const logout = useLogout()
+  const isAuthenticated = Boolean(authStatus.data?.user)
+  const dashboardQuery = useDashboard(isAuthenticated)
+  const { data: dashboard, isLoading: dashboardLoading } = dashboardQuery
+  const { data: projects, isLoading: projectsLoading } = useProjects(isAuthenticated)
   const createProject = useCreateProject()
-  const { data: servers, isLoading: serversLoading } = useServers()
+  const { data: servers, isLoading: serversLoading } = useServers(isAuthenticated)
   const connectServer = useConnectServer()
   const provisionServer = useProvisionServer()
   const testServer = useTestServer()
   const deleteServer = useDeleteServer()
-  const { data: settings, isLoading: settingsLoading } = useSettings()
+  const { data: settings, isLoading: settingsLoading } = useSettings(isAuthenticated)
   const connectGitHub = useConnectGitHub()
   const disconnectGitHub = useDisconnectGitHub()
   const saveAWS = useSaveAWS()
-  const { data: audit, isLoading: auditLoading } = useAudit()
+  const testAWS = useTestAWS()
+  const { data: audit, isLoading: auditLoading } = useAudit(isAuthenticated)
 
   React.useEffect(() => {
-    const saved = localStorage.getItem('forge-theme') as 'light' | 'dark' | null
-    const initial = saved || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
-    setTheme(initial)
-    document.documentElement.classList.toggle('light', initial === 'light')
-  }, [])
+    document.documentElement.classList.toggle('light', theme === 'light')
+  }, [theme])
 
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark'
@@ -111,33 +125,53 @@ export default function App() {
     document.documentElement.classList.toggle('light', next === 'light')
   }
 
-  React.useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        // Close any open modals/panels on Escape
-      }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [])
+  const openProject = (projectId: string) => {
+    setCurrentProjectId(projectId)
+    setCurrentView('project-detail')
+    setSidebarOpen(false)
+  }
+
+  const backToProjects = () => {
+    setCurrentProjectId(null)
+    setCurrentView('projects')
+    setSidebarOpen(false)
+  }
+
+  if (authStatus.isLoading) return <StartupScreen />
+  if (authStatus.isError) {
+    return <StartupError message={authStatus.error.message} onRetry={() => authStatus.refetch()} />
+  }
+  if (!isAuthenticated) {
+    return (
+      <AuthScreen
+        needsSetup={authStatus.data?.needsSetup ?? false}
+        isPending={createOwner.isPending || login.isPending}
+        onSubmit={(credentials) =>
+          authStatus.data?.needsSetup
+            ? createOwner.mutateAsync(credentials)
+            : login.mutateAsync(credentials)
+        }
+      />
+    )
+  }
 
   const renderView = () => {
     if (currentView === 'project-detail' && currentProjectId) {
-      return <ProjectDetailView projectId={currentProjectId} />
+      return <ProjectDetailView projectId={currentProjectId} servers={servers ?? []} onBack={backToProjects} />
     }
     switch (currentView) {
       case 'dashboard':
-        return <DashboardView data={dashboard} isLoading={dashboardLoading} />
+        return <DashboardView data={dashboard} isLoading={dashboardLoading} userName={authStatus.data?.user?.username ?? ''} onOpenProjects={() => setCurrentView('projects')} error={dashboardQuery.error} onRetry={() => dashboardQuery.refetch()} />
       case 'projects':
-        return <ProjectsView projects={projects ?? []} isLoading={projectsLoading} createProject={createProject} onOpenProject={setCurrentProjectId} />
+        return <ProjectsView projects={projects ?? []} isLoading={projectsLoading} createProject={createProject} onOpenProject={openProject} />
       case 'servers':
         return <ServersView servers={servers ?? []} isLoading={serversLoading} connectServer={connectServer} provisionServer={provisionServer} testServer={testServer} deleteServer={deleteServer} />
       case 'audit':
         return <AuditView data={audit ?? []} isLoading={auditLoading} />
       case 'settings':
-        return <SettingsView settings={settings} isLoading={settingsLoading} connectGitHub={connectGitHub} disconnectGitHub={disconnectGitHub} saveAWS={saveAWS} />
+        return <SettingsView settings={settings} isLoading={settingsLoading} connectGitHub={connectGitHub} disconnectGitHub={disconnectGitHub} saveAWS={saveAWS} testAWS={testAWS} />
       default:
-        return <DashboardView data={dashboard} isLoading={dashboardLoading} />
+        return <DashboardView data={dashboard} isLoading={dashboardLoading} userName={authStatus.data?.user?.username ?? ''} onOpenProjects={() => setCurrentView('projects')} error={dashboardQuery.error} onRetry={() => dashboardQuery.refetch()} />
     }
   }
 
@@ -145,10 +179,9 @@ export default function App() {
     <div className="app-shell min-h-screen flex">
       <aside
         className={cn(
-          'sidebar w-55 flex-shrink-0 border-r border-[var(--color-border)] bg-[var(--color-surface)] flex flex-col p-4 gap-1',
-          'lg:static lg:translate-x-0 lg:z-auto',
-          sidebarOpen && 'lg:hidden fixed inset-y-0 left-0 z-50 transform transition-transform duration-180 translate-x-0',
-          !sidebarOpen && 'lg:hidden fixed inset-y-0 left-0 z-50 -translate-x-full transform transition-transform duration-180'
+          'sidebar w-55 shrink-0 border-r border-[var(--color-border)] bg-[var(--color-surface)] flex flex-col p-4 gap-1 fixed inset-y-0 left-0 z-50 transform transition-transform duration-180',
+          'lg:sticky lg:top-0 lg:h-screen lg:translate-x-0 lg:z-20',
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         )}
       >
         <div className="sidebar-brand flex items-center gap-2 px-2 py-2 mb-4 font-bold text-lg tracking-tighter">
@@ -160,6 +193,7 @@ export default function App() {
             <button
               key={item.id}
               onClick={() => { setCurrentView(item.id); setSidebarOpen(false); }}
+              aria-current={currentView === item.id || (currentView === 'project-detail' && item.id === 'projects') ? 'page' : undefined}
               className={cn(
                 'nav-item flex items-center gap-2.5 px-2.5 py-2.5 rounded-[8px] text-sm text-[var(--color-text-secondary)]',
                 'hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-text)] transition-colors',
@@ -180,7 +214,8 @@ export default function App() {
             Theme
           </button>
           <button
-            onClick={() => toast('Logged out')}
+            onClick={() => logout.mutate(undefined, { onError: (error) => toast(error.message, 'error') })}
+            disabled={logout.isPending}
             className="nav-item flex items-center gap-2.5 px-2.5 py-2.5 rounded-[8px] text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-text)]"
           >
             <LogOut className="w-4 h-4 flex-shrink-0" />
@@ -211,11 +246,11 @@ export default function App() {
               <Menu className="w-5 h-5" />
             </button>
             <div className="breadcrumb text-sm text-[var(--color-text-secondary)]">
-              <strong className="text-[var(--color-text)] font-semibold capitalize">{currentView}</strong>
+              <strong className="text-[var(--color-text)] font-semibold">{currentView === 'project-detail' ? 'Projects / Detail' : NAV_ITEMS.find((item) => item.id === currentView)?.label ?? 'Dashboard'}</strong>
             </div>
           </div>
           <div className="topbar-actions flex items-center gap-2">
-            <Badge variant="neutral">User</Badge>
+            <Badge variant="neutral">{authStatus.data?.user?.username}</Badge>
           </div>
         </header>
 
@@ -227,84 +262,226 @@ export default function App() {
   )
 }
 
-function DashboardView({ data, isLoading }: { data: any; isLoading: boolean }) {
+function StartupScreen() {
+  return (
+    <main className="startup-screen" aria-label="Loading Forge">
+      <span className="mark" />
+      <Loader2 className="startup-spinner" aria-hidden="true" />
+    </main>
+  )
+}
+
+function StartupError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <main className="startup-screen">
+      <section className="startup-error" role="alert">
+        <AlertTriangle aria-hidden="true" />
+        <h1>Forge could not connect</h1>
+        <p>{message}</p>
+        <Button onClick={onRetry}>Retry</Button>
+      </section>
+    </main>
+  )
+}
+
+function AuthScreen({
+  needsSetup,
+  isPending,
+  onSubmit,
+}: {
+  needsSetup: boolean
+  isPending: boolean
+  onSubmit: (credentials: { username: string; password: string }) => Promise<unknown>
+}) {
+  const [username, setUsername] = React.useState('')
+  const [password, setPassword] = React.useState('')
+  const [error, setError] = React.useState('')
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setError('')
+    try {
+      await onSubmit({ username: username.trim(), password })
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : 'Authentication failed.')
+    }
+  }
+
+  return (
+    <main className="auth-screen">
+      <div className="auth-layout">
+        <section className="auth-aside" aria-label="Forge">
+          <div className="sidebar-brand">
+            <span className="mark" />
+            Forge
+          </div>
+          <div className="auth-aside-center">
+            <p className="auth-kicker"><Activity aria-hidden="true" /> CONTROL PLANE</p>
+            <h1>Own your<br />infrastructure.</h1>
+            <div className="auth-status"><span className="status-light" /> SELF-HOSTED WORKSPACE</div>
+          </div>
+          <div className="auth-aside-footer"><span>FORGE / AWS</span><span>v0.1.0</span></div>
+        </section>
+
+        <section className="auth-panel">
+          <div>
+            <p className="auth-kicker">{needsSetup ? 'FIRST RUN' : 'OWNER ACCESS'}</p>
+            <h2>{needsSetup ? 'Create your account' : 'Welcome back'}</h2>
+            <p className="auth-subtitle">
+              {needsSetup
+                ? 'Set up the owner account for this Forge instance.'
+                : 'Sign in to continue to your workspace.'}
+            </p>
+          </div>
+
+          <form className="auth-form" onSubmit={submit}>
+            <Input
+              autoComplete="username"
+              label="Username"
+              name="username"
+              minLength={3}
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              required
+            />
+            <Input
+              autoComplete={needsSetup ? 'new-password' : 'current-password'}
+              label="Password"
+              name="password"
+              type="password"
+              minLength={needsSetup ? 10 : 1}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              required
+            />
+            {needsSetup && <p className="auth-hint">Use at least 10 characters.</p>}
+            {error && <p className="auth-error" role="alert">{error}</p>}
+            <Button type="submit" disabled={isPending} className="auth-submit">
+              {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+              {needsSetup ? 'Create owner account' : 'Sign in'}
+              {!isPending && <ArrowRight className="w-4 h-4" />}
+            </Button>
+          </form>
+          <p className="auth-panel-footer">Private by design. Your credentials stay on this instance.</p>
+        </section>
+      </div>
+    </main>
+  )
+}
+
+function DashboardView({ data, isLoading, userName, onOpenProjects, error, onRetry }: {
+  data: any
+  isLoading: boolean
+  userName: string
+  onOpenProjects: () => void
+  error?: Error | null
+  onRetry: () => void
+}) {
   if (isLoading) {
     return (
-      <div className="space-y-4">
-        <Skeleton className="health-hero rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-surface)] p-7 h-32" />
-        <Card>
-          <CardHeader><h2 className="text-base font-semibold">Overview</h2></CardHeader>
-          <div className="tiles grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            {[1,2,3,4].map((i) => (
-              <Skeleton key={i} className="tile rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-surface)] p-3.5 h-20" />
-            ))}
-          </div>
-        </Card>
-        <Card>
-          <CardHeader className="flex items-center justify-between">
-            <h2 className="text-base font-semibold">Recent activity</h2>
-          </CardHeader>
-          <Skeleton className="h-20" />
-        </Card>
+      <div className="dashboard-view" aria-busy="true">
+        <header className="page-heading">
+          <div><p className="page-kicker">OPERATIONS / OVERVIEW</p><Skeleton className="h-8 w-40" /></div>
+        </header>
+        <Skeleton className="h-24 rounded-[var(--radius)]" />
+        <div className="dashboard-metrics">
+          {[1, 2, 3].map((index) => <Skeleton key={index} className="h-28 rounded-[var(--radius)]" />)}
+        </div>
+        <Skeleton className="mt-8 h-44" />
       </div>
     )
   }
 
-  if (!data) return null
+  if (!data) {
+    return (
+      <div className="startup-error" role="alert">
+        <AlertTriangle aria-hidden="true" />
+        <h2>Overview unavailable</h2>
+        <p>{error?.message || 'Forge could not load the latest system status.'}</p>
+        <Button variant="subtle" onClick={onRetry}>Retry</Button>
+      </div>
+    )
+  }
+
+  const statusLabel = data.overall === 'healthy'
+    ? 'Systems nominal'
+    : data.overall === 'attention'
+      ? 'Needs attention'
+      : 'Critical issue'
+  const openIncidentCount = data.openIncidents?.length ?? 0
+  const statusDescription = openIncidentCount > 0
+    ? `${openIncidentCount} open incident${openIncidentCount === 1 ? '' : 's'} require review.`
+    : data.projectCount === 0
+      ? 'Control plane ready. Add a project to begin.'
+      : 'No active incidents. Your latest checks are clear.'
+  const components = Object.entries(data.components || {}) as [string, string][]
+  const metrics = [
+    { label: 'Projects', value: data.projectCount, detail: 'Tracked applications', icon: FolderGit2 },
+    { label: 'Servers', value: data.serverCount, detail: 'Connected environments', icon: Server },
+    { label: 'Open incidents', value: openIncidentCount, detail: openIncidentCount ? 'Requires review' : 'No action required', icon: AlertTriangle },
+  ]
 
   return (
-    <div className="space-y-4">
-      <div className={cn(
-        'health-hero rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-surface)] p-7 text-center',
-        `state-${data.overall}`
-      )}>
-        <p className="text-sm text-[var(--color-text-secondary)] mb-1">Forge status</p>
-        <p className="state text-2xl font-bold tracking-tighter mb-4">
-          {data.overall === 'healthy' ? 'All systems healthy' : data.overall === 'attention' ? 'Needs attention' : 'Critical issue'}
-        </p>
-        <div className="health-components grid grid-cols-4 gap-2.5 max-w-md mx-auto">
-          {Object.entries(data.components).map(([key, state]) => (
-            <Badge key={key} variant={state === 'healthy' ? 'success' : state === 'attention' ? 'warning' : 'danger'} className="text-xs">
-              {key}
-            </Badge>
+    <div className="dashboard-view">
+      <header className="page-heading">
+        <div>
+          <p className="page-kicker">OPERATIONS / OVERVIEW</p>
+          <h1 className="page-title">Overview</h1>
+          <p className="page-description">Workspace for {userName}</p>
+        </div>
+        <Button onClick={onOpenProjects}><Plus className="w-4 h-4" /> New project</Button>
+      </header>
+
+      <section className={cn('system-banner', `state-${data.overall}`)} aria-live="polite">
+        <div className="system-state-icon"><Activity className="w-5 h-5" aria-hidden="true" /></div>
+        <div>
+          <p className="section-kicker">PLATFORM STATUS</p>
+          <h2>{statusLabel}</h2>
+          <p>{statusDescription}</p>
+        </div>
+        <div className="component-status-list">
+          {components.map(([name, state]) => (
+            <span className="component-status" data-state={state} key={name}>{name}</span>
           ))}
         </div>
-      </div>
+      </section>
 
-      <Card>
-        <CardHeader><h2 className="text-base font-semibold">Overview</h2></CardHeader>
-        <div className="tiles grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          {[
-            { label: 'Projects', value: data.projectCount },
-            { label: 'Servers', value: data.serverCount },
-            { label: 'Open incidents', value: data.openIncidents },
-            { label: 'Signed in as', value: 'User' },
-          ].map((tile, i) => (
-            <div key={i} className="tile rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-surface)] p-3.5 text-center">
-              <p className="label text-xs text-[var(--color-text-muted)] mb-1.5">{tile.label}</p>
-              <p className="value text-2xl font-bold tracking-tighter">{tile.value}</p>
+      <section aria-labelledby="environment-heading">
+        <div className="section-heading">
+          <h2 id="environment-heading">Environment</h2>
+          <p>Live inventory</p>
+        </div>
+        <div className="dashboard-metrics">
+          {metrics.map(({ label, value, detail, icon: Icon }) => (
+            <div className="dashboard-metric" key={label}>
+              <div className="metric-topline"><Icon aria-hidden="true" /><span>{detail}</span></div>
+              <strong className="metric-value">{String(value ?? 0).padStart(2, '0')}</strong>
+              <span className="metric-label">{label}</span>
             </div>
           ))}
         </div>
-      </Card>
+      </section>
 
-      <Card>
-        <CardHeader className="flex items-center justify-between">
-          <h2 className="text-base font-semibold">Recent activity</h2>
-        </CardHeader>
-        <div className="stack space-y-3 text-[var(--color-text-secondary)]">
-          {data.recentActivity.length === 0 ? (
-            <p className="text-center py-4">Nothing yet — actions you take will show up here.</p>
-          ) : (
-            data.recentActivity.map((entry: any, i: number) => (
-              <div key={i} className="flex items-baseline justify-between border-b border-[var(--color-border)] pb-3 last:border-0">
-                <span className="text-sm">{entry.actor} — {entry.action.replace(/\./g, ' · ')}</span>
-                <span className="text-xs text-[var(--color-text-muted)]">{timeAgo(entry.ts)}</span>
-              </div>
-            ))
-          )}
+      <section className="activity-section" aria-labelledby="activity-heading">
+        <div className="section-heading">
+          <h2 id="activity-heading">Recent activity</h2>
+          <p>Latest control-plane events</p>
         </div>
-      </Card>
+        {data.recentActivity?.length ? (
+          <>
+            <div className="activity-row activity-header"><span>ACTOR</span><span>EVENT</span><span>WHEN</span></div>
+            {data.recentActivity.map((entry: any, index: number) => (
+              <div className="activity-row" key={`${entry.ts}-${index}`}>
+                <span className="activity-actor">{entry.actor}</span>
+                <span className="activity-action">{entry.action.replace(/\./g, ' / ')}</span>
+                <span className="activity-time">{timeAgo(entry.ts)}</span>
+              </div>
+            ))}
+          </>
+        ) : (
+          <p className="activity-empty">No activity recorded yet.</p>
+        )}
+      </section>
     </div>
   )
 }
@@ -549,20 +726,20 @@ function ProjectsView({ projects, isLoading, createProject, onOpenProject }: { p
   )
 }
  
-function ProjectDetailView({ projectId }: { projectId: string }) {
+function ProjectDetailView({ projectId, servers, onBack }: { projectId: string; servers: any[]; onBack: () => void }) {
   const [currentTab, setCurrentTab] = React.useState<'releases' | 'logs' | 'secrets' | 'settings'>('releases')
   const { toast } = useToast()
   
-  const { data: projectData, isLoading } = useProject(projectId)
+  const { data: projectData, isLoading } = useProjectDetail(projectId)
   const project = projectData?.project
   
-  const deployMutation = useDeployProject(projectId)
-  const rollbackMutation = useRollbackDeployment(projectId, '')
+  const deployMutation = useTriggerDeploy(projectId)
+  const rollbackMutation = useRollbackProject(projectId)
   const restartMutation = useRestartContainer(projectId)
   const { query: secretsQuery, add: addSecret, remove: removeSecret } = useProjectSecrets(projectId)
-  const updateMutation = useUpdateProject(projectId)
-  const deleteMutation = useDeleteProject(projectId)
-  const toggleAutoDeployMutation = useToggleAutoDeploy(projectId, false)
+  const updateMutation = useUpdateProjectSettings(projectId)
+  const deleteMutation = useDeleteProject()
+  const toggleAutoDeployMutation = useToggleWebhook(projectId)
   
   const handleDeploy = async () => {
     try {
@@ -575,7 +752,7 @@ function ProjectDetailView({ projectId }: { projectId: string }) {
   
   const handleRollback = async (_deploymentId: string) => {
     try {
-      await rollbackMutation.mutateAsync()
+      await rollbackMutation.mutateAsync(_deploymentId)
       toast('Rollback started', 'success')
     } catch (err: any) {
       toast(err.message, 'error')
@@ -620,9 +797,9 @@ function ProjectDetailView({ projectId }: { projectId: string }) {
   
   const handleDeleteProject = async () => {
     try {
-      await deleteMutation.mutateAsync()
+      await deleteMutation.mutateAsync(projectId)
       toast('Project deleted', 'success')
-      window.location.href = '/projects'
+      onBack()
     } catch (err: any) {
       toast(err.message, 'error')
     }
@@ -630,7 +807,7 @@ function ProjectDetailView({ projectId }: { projectId: string }) {
   
   const handleToggleAutoDeploy = async (enable: boolean) => {
     try {
-      await toggleAutoDeployMutation.mutateAsync()
+      await toggleAutoDeployMutation.mutateAsync(enable)
       toast(enable ? 'Auto-deploy enabled' : 'Auto-deploy disabled', 'success')
     } catch (err: any) {
       toast(err.message, 'error')
@@ -653,6 +830,9 @@ function ProjectDetailView({ projectId }: { projectId: string }) {
  
   return (
     <div className="space-y-4">
+      <div className="detail-back-row">
+        <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft className="w-4 h-4" /> Projects</Button>
+      </div>
       <Card>
         <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
@@ -704,7 +884,7 @@ function ProjectDetailView({ projectId }: { projectId: string }) {
         <TabsContent value="settings" className="mt-4">
           <SettingsTab 
             project={project}
-            servers={[]}
+            servers={servers}
             onUpdate={handleUpdateSettings}
             onDelete={handleDeleteProject}
             onToggleAutoDeploy={handleToggleAutoDeploy}
@@ -975,66 +1155,140 @@ function ServersView({ servers, isLoading, connectServer, provisionServer, testS
   )
 }
 
-function SettingsView({ settings, isLoading, connectGitHub, disconnectGitHub, saveAWS }: any) {
+function SettingsView({ settings, isLoading, connectGitHub, disconnectGitHub, saveAWS, testAWS }: any) {
   const { toast } = useToast()
+  const [githubToken, setGithubToken] = React.useState('')
   const [awsForm, setAwsForm] = React.useState({ accessKeyId: '', secretAccessKey: '', region: '' })
 
   if (isLoading) return <Card><Skeleton className="h-40" /></Card>
 
+  const handleConnectGitHub = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    try {
+      await connectGitHub.mutateAsync(githubToken)
+      setGithubToken('')
+      toast('GitHub connected', 'success')
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Could not connect GitHub.', 'error')
+    }
+  }
+
+  const handleDisconnectGitHub = async () => {
+    try {
+      await disconnectGitHub.mutateAsync()
+      toast('GitHub disconnected', 'success')
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Could not disconnect GitHub.', 'error')
+    }
+  }
+
+  const handleSaveAWS = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    try {
+      await saveAWS.mutateAsync(awsForm)
+      toast('AWS settings saved', 'success')
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Could not save AWS settings.', 'error')
+    }
+  }
+
+  const handleTestAWS = async () => {
+    try {
+      await testAWS.mutateAsync()
+      toast(settings?.aws?.endpoint ? 'Local EC2 API is reachable' : 'AWS EC2 connection succeeded', 'success')
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Could not reach the EC2 API.', 'error')
+    }
+  }
+
   return (
-    <div className="space-y-4 max-w-2xl">
-      <Card>
-        <CardHeader>
-          <h2 className="text-base font-semibold">GitHub</h2>
-        </CardHeader>
-        <div className="space-y-4">
+    <div className="settings-page">
+      <header className="page-heading">
+        <div>
+          <p className="page-kicker">CONFIGURATION</p>
+          <h1 className="page-title">Settings</h1>
+          <p className="page-description">Connections for source control and infrastructure.</p>
+        </div>
+      </header>
+      <div className="settings-grid">
+        <Card className="settings-card">
+          <CardHeader>
+            <div>
+              <p className="section-kicker">SOURCE CONTROL</p>
+              <h2 className="text-base font-semibold">GitHub</h2>
+            </div>
+            {settings?.github?.connected && <Badge variant="success">connected</Badge>}
+          </CardHeader>
           {settings?.github?.connected ? (
-            <div className="flex items-center justify-between">
-              <div className="inline-row items-center gap-2">
-                <Badge variant="success">connected</Badge>
-                <span className="text-[var(--color-text-secondary)]">as {settings.github.login}</span>
-              </div>
-              <Button variant="danger" size="sm" onClick={() => { disconnectGitHub.mutate(); toast('GitHub disconnected') }}>
+            <div className="connection-row">
+              <p>Connected as <strong>{settings.github.login}</strong></p>
+              <Button variant="danger" size="sm" onClick={handleDisconnectGitHub} disabled={disconnectGitHub.isPending}>
+                {disconnectGitHub.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
                 Disconnect
               </Button>
             </div>
           ) : (
-            <div className="space-y-3">
-              <p className="text-[var(--color-text-secondary)]">Forge needs a GitHub personal access token to list and deploy your repositories.</p>
-              <div className="flex gap-2">
-                <Input type="password" placeholder="ghp_…" className="flex-1" />
-                <Button onClick={() => { connectGitHub.mutate(''); toast('GitHub connected', 'success') }} disabled={connectGitHub.isPending}>
+            <form className="settings-form" onSubmit={handleConnectGitHub}>
+              <p className="text-[var(--color-text-secondary)]">Connect an account to browse repositories and manage deployments.</p>
+              <Input
+                label="Personal access token"
+                name="github-token"
+                type="password"
+                autoComplete="off"
+                placeholder="github_pat_..."
+                value={githubToken}
+                onChange={(event) => setGithubToken(event.target.value)}
+                required
+              />
+              <div className="flex justify-end">
+                <Button type="submit" disabled={connectGitHub.isPending || !githubToken}>
                   {connectGitHub.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Connect'}
                 </Button>
               </div>
-              <p className="text-xs text-[var(--color-text-muted)]">Needs repo scope. Create one at github.com → Settings → Developer settings → Personal access tokens.</p>
-            </div>
+              <p className="text-xs text-[var(--color-text-muted)]">Grant repository access to the repositories Forge should manage.</p>
+            </form>
           )}
-        </div>
-      </Card>
+        </Card>
 
-      <Card>
-        <CardHeader>
-          <h2 className="text-base font-semibold">AWS</h2>
-        </CardHeader>
-        <div className="space-y-4">
-          {settings?.aws?.usingInstanceProfile ? (
+        <Card className="settings-card">
+          <CardHeader>
+            <div>
+              <p className="section-kicker">COMPUTE PROVIDER</p>
+              <h2 className="text-base font-semibold">AWS</h2>
+            </div>
+            {settings?.aws?.endpoint && <Badge variant="warning">local endpoint</Badge>}
+          </CardHeader>
+          {settings?.aws?.endpoint ? (
+            <div className="local-endpoint" role="status">
+              <span className="status-light" />
+              <div><span>EC2 API endpoint</span><code>{settings.aws.endpoint}</code></div>
+            </div>
+          ) : settings?.aws?.usingInstanceProfile ? (
             <p className="text-[var(--color-text-secondary)]">Using this box's own EC2 instance profile for AWS access.</p>
           ) : settings?.aws?.configured ? (
             <p className="text-[var(--color-text-secondary)]">Configured for region <strong>{settings.aws.region}</strong>.</p>
           ) : (
-            <p className="text-[var(--color-text-secondary)]">No keys saved — Forge will use this instance's own EC2 IAM role if it has one, needed only if you want Forge to provision new EC2 servers for you.</p>
+            <p className="text-[var(--color-text-secondary)]">Add AWS credentials or attach an EC2 instance profile to this host to provision servers.</p>
           )}
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Input label="Access key ID" placeholder="AKIA…" value={awsForm.accessKeyId} onChange={e => setAwsForm(prev => ({ ...prev, accessKeyId: e.target.value }))} />
-            <Input type="password" label="Secret access key" placeholder="secret access key" value={awsForm.secretAccessKey} onChange={e => setAwsForm(prev => ({ ...prev, secretAccessKey: e.target.value }))} />
-          </div>
-          <Input label="Region" placeholder="us-east-1" value={awsForm.region} onChange={e => setAwsForm(prev => ({ ...prev, region: e.target.value }))} style={{ maxWidth: '220px' }} />
-          <Button onClick={() => { saveAWS.mutate(awsForm); toast('AWS settings saved', 'success') }} disabled={saveAWS.isPending}>
-            {saveAWS.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null} Save
-          </Button>
-        </div>
-      </Card>
+          <form className="settings-form" onSubmit={handleSaveAWS}>
+            <div className="settings-form-grid">
+              <Input label="Access key ID" autoComplete="off" placeholder="AKIA..." value={awsForm.accessKeyId} onChange={event => setAwsForm(prev => ({ ...prev, accessKeyId: event.target.value }))} />
+              <Input label="Secret access key" autoComplete="new-password" type="password" placeholder="Secret access key" value={awsForm.secretAccessKey} onChange={event => setAwsForm(prev => ({ ...prev, secretAccessKey: event.target.value }))} />
+            </div>
+            <Input label="Region" placeholder={settings?.aws?.region || 'us-east-1'} value={awsForm.region} onChange={event => setAwsForm(prev => ({ ...prev, region: event.target.value }))} />
+            <div className="settings-actions">
+              <Button type="button" variant="subtle" onClick={handleTestAWS} disabled={testAWS.isPending}>
+                {testAWS.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Activity className="w-4 h-4" />}
+                Test EC2 connection
+              </Button>
+              <Button type="submit" disabled={saveAWS.isPending}>
+                {saveAWS.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+                Save credentials
+              </Button>
+            </div>
+          </form>
+        </Card>
+      </div>
     </div>
   )
 }

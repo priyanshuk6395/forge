@@ -2,14 +2,7 @@ export type HealthState = 'healthy' | 'attention' | 'critical'
 
 export interface DashboardData {
   overall: HealthState
-  components: {
-    application: HealthState
-    server: HealthState
-    security: HealthState
-    network: HealthState
-    ssl: HealthState
-    deployment: HealthState
-  }
+  components: Partial<Record<'application' | 'server' | 'security' | 'network' | 'ssl' | 'deployment', HealthState>>
   projectCount: number
   serverCount: number
   openIncidents: number
@@ -27,7 +20,9 @@ export interface Project {
   name: string
   repoFullName: string
   branch: string
+  port: number
   hostPort: number
+  healthPath: string
   serverId: string | null
   health: HealthState
   lastDeployedAt: string | null
@@ -72,6 +67,7 @@ export interface AWSSettings {
   usingInstanceProfile: boolean
   configured: boolean
   region: string
+  endpoint: string | null
 }
 
 export interface SettingsData {

@@ -3,3 +3,7 @@ data/
 .env
 *.log
 .DS_Store
+# Generated bundles and local analysis output
+/client/dist/
+/public/
+/server/repomix-output.xml

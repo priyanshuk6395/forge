@@ -23,12 +23,16 @@ router.get(
         githubStatus = { connected: false, error: 'Stored token is no longer valid.' };
       }
     }
+    const localEndpoint = aws.getEndpoint();
+    const hasStoredCredentials = !!(settings.awsAccessKeyIdEnc && settings.awsSecretAccessKeyEnc);
+    const hasEnvironmentCredentials = !!(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
     res.json({
       github: githubStatus,
       aws: {
-        configured: !!(settings.awsAccessKeyIdEnc && settings.awsSecretAccessKeyEnc),
-        usingInstanceProfile: !(settings.awsAccessKeyIdEnc && settings.awsSecretAccessKeyEnc),
+        configured: hasStoredCredentials || hasEnvironmentCredentials,
+        usingInstanceProfile: !hasStoredCredentials && !hasEnvironmentCredentials && !localEndpoint,
         region: aws.getRegion(),
+        endpoint: localEndpoint,
       },
     });
   })
@@ -85,8 +89,8 @@ router.delete('/aws', (req, res) => {
 router.post(
   '/aws/test',
   asyncHandler(async (req, res) => {
-    const ok = await aws.isConfigured();
-    if (!ok) return res.status(400).json({ ok: false, error: 'No usable AWS credentials found.' });
+    const ok = await aws.checkConnection();
+    if (!ok) return res.status(400).json({ ok: false, error: 'AWS EC2 is not reachable with the configured credentials.' });
     res.json({ ok: true });
   })
 );
