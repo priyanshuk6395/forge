@@ -42,12 +42,17 @@ sudo apt-get update -y
 log "Installing git, curl..."
 sudo apt-get install -y --no-install-recommends ca-certificates curl git
 
-if ! command -v node >/dev/null 2>&1; then
-  log "Installing Node.js 20.x..."
-  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+NODE_MAJOR=0
+if command -v node >/dev/null 2>&1; then
+  NODE_MAJOR="$(node -p 'parseInt(process.versions.node.split(".")[0], 10)' 2>/dev/null || printf '0')"
+fi
+
+if [ "$NODE_MAJOR" -lt 22 ]; then
+  log "Installing/upgrading to Node.js 22.x..."
+  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
   sudo apt-get install -y nodejs
 else
-  log "Node.js already installed ($(node --version)), skipping."
+  log "Node.js $(node --version) already meets the minimum, skipping."
 fi
 
 if [ -d "$APP_DIR/.git" ]; then

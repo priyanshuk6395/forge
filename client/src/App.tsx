@@ -1272,10 +1272,10 @@ function SettingsView({ settings, isLoading, connectGitHub, disconnectGitHub, sa
           )}
           <form className="settings-form" onSubmit={handleSaveAWS}>
             <div className="settings-form-grid">
-              <Input label="Access key ID" autoComplete="off" placeholder="AKIA..." value={awsForm.accessKeyId} onChange={event => setAwsForm(prev => ({ ...prev, accessKeyId: event.target.value }))} />
-              <Input label="Secret access key" autoComplete="new-password" type="password" placeholder="Secret access key" value={awsForm.secretAccessKey} onChange={event => setAwsForm(prev => ({ ...prev, secretAccessKey: event.target.value }))} />
+              <Input label="Access key ID" name="awsAccessKeyId" autoComplete="off" placeholder="AKIA..." value={awsForm.accessKeyId} onChange={event => setAwsForm(prev => ({ ...prev, accessKeyId: event.target.value }))} />
+              <Input label="Secret access key" name="awsSecretAccessKey" autoComplete="new-password" type="password" placeholder="Secret access key" value={awsForm.secretAccessKey} onChange={event => setAwsForm(prev => ({ ...prev, secretAccessKey: event.target.value }))} />
             </div>
-            <Input label="Region" placeholder={settings?.aws?.region || 'us-east-1'} value={awsForm.region} onChange={event => setAwsForm(prev => ({ ...prev, region: event.target.value }))} />
+            <Input label="Region" name="awsRegion" placeholder={settings?.aws?.region || 'us-east-1'} value={awsForm.region} onChange={event => setAwsForm(prev => ({ ...prev, region: event.target.value }))} />
             <div className="settings-actions">
               <Button type="button" variant="subtle" onClick={handleTestAWS} disabled={testAWS.isPending}>
                 {testAWS.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Activity className="w-4 h-4" />}

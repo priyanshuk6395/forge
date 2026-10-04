@@ -63,6 +63,18 @@ async function isConfigured() {
   }
 }
 
+async function ensureCredentials(client) {
+  try {
+    await client.config.credentials();
+  } catch {
+    const error = new Error(
+      'AWS credentials were not found. Add an access key pair in Forge Settings or attach an IAM instance profile to the EC2 instance running Forge.'
+    );
+    error.status = 400;
+    throw error;
+  }
+}
+
 async function findLatestUbuntuAmi(client) {
   const localAmiId = process.env.FORGE_AWS_AMI_ID;
   if (localAmiId && getEndpoint()) {
@@ -88,7 +100,9 @@ async function findLatestUbuntuAmi(client) {
 }
 
 async function checkConnection() {
-  await makeClient().send(new DescribeVpcsCommand({ MaxResults: 1 }));
+  const client = makeClient();
+  await ensureCredentials(client);
+  await client.send(new DescribeVpcsCommand({ MaxResults: 1 }));
   return true;
 }
 
@@ -228,6 +242,7 @@ async function terminateInstance(instanceId) {
 // Orchestrates the full "create a new EC2 instance" flow (9.5 Option A).
 async function provisionServer({ name, instanceType = 't3.micro', sshCidr, appPort, bootstrapUserData }) {
   const client = makeClient();
+  await ensureCredentials(client);
   const [amiId, { vpcId, subnetId }] = await Promise.all([
     findLatestUbuntuAmi(client),
     getDefaultNetworking(client),

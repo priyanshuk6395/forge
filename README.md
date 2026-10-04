@@ -106,8 +106,8 @@ npm start
 
 The production-like server uses the `PORT` value in `.env` (default `80`);
 set `$env:PORT='3000'` in PowerShell before `npm start` to run without
-elevated permissions. The client toolchain requires Node.js 20.19+ (or
-22.12+); the Express server itself supports Node.js 18+. Docker is only
+elevated permissions. The server requires Node.js 22+ to match the AWS SDK
+runtime. The client toolchain requires Node.js 20.19+ (or 22.12+). Docker is only
 needed locally for the AWS emulator described below and on target servers
 Forge deploys to.
 
@@ -268,6 +268,23 @@ Pop-Location
   no built-in TLS — see "what's next" above.
 
 ---
+
+## Browser E2E tests
+
+With project dependencies installed and the Moto service running on port 5000:
+
+```powershell
+Push-Location client
+npx playwright install chromium
+npm run build
+npm run test:e2e
+Pop-Location
+```
+
+The suite starts Forge on an isolated port with a disposable data store. GitHub
+responses and the SSH target are fixtures; Moto validates the EC2 API
+connection, but real GitHub authentication, EC2 guest bootstrap, and SSH/Docker
+deployment require external credentials and a reachable Linux server.
 
 ## Architecture, in short
 

@@ -26,11 +26,13 @@ router.get(
     const localEndpoint = aws.getEndpoint();
     const hasStoredCredentials = !!(settings.awsAccessKeyIdEnc && settings.awsSecretAccessKeyEnc);
     const hasEnvironmentCredentials = !!(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
+    const usingInstanceProfile =
+      !hasStoredCredentials && !hasEnvironmentCredentials && !localEndpoint && (await aws.isConfigured());
     res.json({
       github: githubStatus,
       aws: {
         configured: hasStoredCredentials || hasEnvironmentCredentials,
-        usingInstanceProfile: !hasStoredCredentials && !hasEnvironmentCredentials && !localEndpoint,
+        usingInstanceProfile,
         region: aws.getRegion(),
         endpoint: localEndpoint,
       },
