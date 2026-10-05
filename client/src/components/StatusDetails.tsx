@@ -21,8 +21,8 @@ import {
 import { Button } from '@/components/ui/Button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
 import { useToast } from '@/components/ui/Toaster'
-import { useDeleteServer, useRollbackProject, useTestServer } from '@/api/queries'
-import type { ActivityEntry, ApplicationStatus, AuditEvent, IncidentSummary, Server, ServerRequirementReport } from '@/api/types'
+import { useDeleteServer, useRollbackProject, useServerTelemetry, useTestServer } from '@/api/queries'
+import type { ActivityEntry, ApplicationStatus, AuditEvent, IncidentSummary, Server, ServerRequirementReport, ServerTelemetry } from '@/api/types'
 import { timeAgo } from '@/lib/utils'
 import { getServerState, SystemStateLabel } from '@/components/StatusCenter'
 import { Skeleton } from '@/components/ui/Skeleton'
@@ -39,6 +39,7 @@ export function ServerHealthDetail({ server, applications, activity, onBack, onO
   const { toast } = useToast()
   const testServer = useTestServer()
   const deleteServer = useDeleteServer()
+  const telemetryQuery = useServerTelemetry(server?.id ?? null)
   const [confirmRemove, setConfirmRemove] = useState(false)
   const [actionMessage, setActionMessage] = useState('')
 
@@ -52,6 +53,20 @@ export function ServerHealthDetail({ server, applications, activity, onBack, onO
     .map((application) => application.currentDeployment)
     .filter((deployment): deployment is NonNullable<ApplicationStatus['currentDeployment']> => Boolean(deployment))
     .sort((left, right) => right.number - left.number)[0]
+  const telemetry = telemetryQuery.data
+  const unavailableTelemetry = telemetryQuery.isError
+    ? 'SSH unavailable'
+    : telemetry
+      ? 'Not reported'
+      : telemetryQuery.isFetching
+        ? 'Checking…'
+        : 'Not reported'
+  const memoryValue = formatCapacity(telemetry?.memory.usedBytes, telemetry?.memory.totalBytes, telemetry?.memory.percent)
+  const diskValue = formatCapacity(telemetry?.disk.usedBytes, telemetry?.disk.totalBytes, telemetry?.disk.percent)
+  const networkValue = telemetry?.network.receivedBytes != null && telemetry.network.sentBytes != null
+    ? `Rx ${formatBytes(telemetry.network.receivedBytes)} · Tx ${formatBytes(telemetry.network.sentBytes)}`
+    : null
+  const tlsValue = formatTls(telemetry?.tls, unavailableTelemetry)
 
   const handleTest = async () => {
     setActionMessage('Testing SSH connection…')
@@ -121,14 +136,21 @@ export function ServerHealthDetail({ server, applications, activity, onBack, onO
       <section className="detail-section" aria-labelledby="telemetry-heading">
         <div className="status-section-heading"><div><p className="status-eyebrow">HOST TELEMETRY</p><h2 id="telemetry-heading">Resource health</h2></div></div>
         <div className="telemetry-grid">
-          <TelemetryFact icon={Cpu} label="CPU" value="Not reported" />
-          <TelemetryFact icon={MemoryStick} label="Memory" value="Not reported" />
-          <TelemetryFact icon={HardDrive} label="Disk" value="Not reported" />
-          <TelemetryFact icon={Network} label="Network" value="Not monitored" />
-          <TelemetryFact icon={ShieldCheck} label="SSL / TLS" value="Not monitored" />
-          <TelemetryFact icon={Activity} label="Agent" value="Not installed" />
+          <TelemetryFact icon={Cpu} label="CPU" value={telemetry?.cpuPercent == null ? unavailableTelemetry : `${telemetry.cpuPercent.toFixed(1)}% used`} />
+          <TelemetryFact icon={MemoryStick} label="Memory" value={memoryValue ?? unavailableTelemetry} />
+          <TelemetryFact icon={HardDrive} label="Disk" value={diskValue ?? unavailableTelemetry} />
+          <TelemetryFact icon={Network} label="Network" value={networkValue ?? unavailableTelemetry} />
+          <TelemetryFact icon={ShieldCheck} label="SSL / TLS" value={tlsValue} state={telemetry?.tls.state === 'valid' ? 'healthy' : telemetry?.tls.state === 'expired' ? 'critical' : 'unknown'} />
+          <TelemetryFact icon={Activity} label="Collector" value={telemetryQuery.isError ? 'SSH unavailable' : 'Agentless SSH'} />
         </div>
-        <p className="detail-context-note"><CircleHelp aria-hidden="true" /> Forge has SSH/bootstrap and application health-check results, but no host agent for resource or certificate telemetry.</p>
+        <p className="detail-context-note">
+          <CircleHelp aria-hidden="true" />
+          {telemetryQuery.isError
+            ? `Live telemetry could not be collected over SSH: ${telemetryQuery.error instanceof Error ? telemetryQuery.error.message : 'unknown error'}`
+            : telemetry
+              ? <>Collected over SSH <time dateTime={telemetry.checkedAt}>{timeAgo(telemetry.checkedAt)}</time>. Network totals are cumulative since boot; TLS checks the registered host on port 443.</>
+              : 'Connecting over SSH to sample this host. No persistent monitoring agent is required.'}
+        </p>
       </section>
 
       <section className="detail-section" aria-labelledby="setup-checks-heading">
@@ -388,13 +410,35 @@ function ActivityList({ entries, showResult = false }: { entries: (ActivityEntry
   )
 }
 
-function TelemetryFact({ icon: Icon, label, value }: { icon: typeof Cpu; label: string; value: string }) {
+function TelemetryFact({ icon: Icon, label, value, state = 'unknown' }: { icon: typeof Cpu; label: string; value: string; state?: 'healthy' | 'critical' | 'unknown' }) {
   return (
     <div className="telemetry-fact">
       <span><Icon aria-hidden="true" /> {label}</span>
-      <strong><CircleHelp aria-hidden="true" /> {value}</strong>
+      <strong data-state={state}>{value}</strong>
     </div>
   )
+}
+
+function formatBytes(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return null
+  if (value === 0) return '0 B'
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  const unitIndex = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1)
+  return `${(value / 1024 ** unitIndex).toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`
+}
+
+function formatCapacity(used: number | null | undefined, total: number | null | undefined, percent: number | null | undefined) {
+  const usedLabel = formatBytes(used)
+  const totalLabel = formatBytes(total)
+  if (!usedLabel || !totalLabel || percent == null) return null
+  return `${usedLabel} / ${totalLabel} · ${percent.toFixed(1)}%`
+}
+
+function formatTls(tls: ServerTelemetry['tls'] | undefined, unavailable: string) {
+  if (!tls) return unavailable
+  if (tls.state !== 'valid' && tls.state !== 'expired') return 'Not verified'
+  const expiryDate = tls.expiresAt?.slice(0, 10) ?? 'date unknown'
+  return `${tls.state === 'valid' ? 'Valid' : 'Expired'} · ${expiryDate}`
 }
 
 function SetupCheckPhase({ phase, title, report }: { phase: 'pre' | 'post'; title: string; report: ServerRequirementReport }) {

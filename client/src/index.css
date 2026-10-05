@@ -801,6 +801,8 @@ html.light {
   .telemetry-fact strong { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: 10px; }
   .telemetry-fact > span { color: var(--color-text-secondary); }
   .telemetry-fact strong { color: var(--color-text-muted); font-weight: 500; text-align: right; }
+  .telemetry-fact strong[data-state="healthy"] { color: var(--color-success); }
+  .telemetry-fact strong[data-state="critical"] { color: var(--color-danger); }
   .telemetry-fact svg { width: 14px; height: 14px; flex: 0 0 auto; }
   .detail-context-note { display: flex; align-items: flex-start; gap: 7px; margin: 9px 0 0; color: var(--color-text-muted); font-size: 10px; }
   .detail-context-note svg { width: 13px; height: 13px; flex: 0 0 auto; margin-top: 2px; color: var(--color-info); }

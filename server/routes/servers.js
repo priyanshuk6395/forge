@@ -69,6 +69,21 @@ router.get('/:id', (req, res) => {
   res.json({ server: toPublic(server) });
 });
 
+router.get(
+  '/:id/telemetry',
+  asyncHandler(async (req, res) => {
+    const server = db.get().servers.find((item) => item.id === req.params.id);
+    if (!server) return res.status(404).json({ error: 'Server not found.' });
+    try {
+      res.json({ telemetry: await ssh.collectTelemetry(server) });
+    } catch {
+      res.status(503).json({
+        error: 'Host telemetry is unavailable. Verify SSH access and stored credentials, then retry.',
+      });
+    }
+  })
+);
+
 async function waitForBootstrap(server, { timeoutMs = 10 * 60 * 1000 } = {}) {
   const start = Date.now();
   let lastErr = null;

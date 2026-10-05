@@ -16,6 +16,44 @@ const REQUIREMENT_CHECK_COMMAND = [
   "if command -v curl >/dev/null 2>&1; then printf 'FORGE_CHECK_CURL=ready\\n'; else printf 'FORGE_CHECK_CURL=missing\\n'; fi",
 ].join('\n');
 
+const HOST_TELEMETRY_COMMAND = [
+  "set -- $(awk '/^cpu / { print $2+$3+$4+$5+$6+$7+$8+$9, $5+$6 }' /proc/stat)",
+  'total_before=$1',
+  'idle_before=$2',
+  'sleep 1',
+  "set -- $(awk '/^cpu / { print $2+$3+$4+$5+$6+$7+$8+$9, $5+$6 }' /proc/stat)",
+  'total_after=$1',
+  'idle_after=$2',
+  "cpu_percent=$(awk -v before_total=\"$total_before\" -v before_idle=\"$idle_before\" -v after_total=\"$total_after\" -v after_idle=\"$idle_after\" 'BEGIN { delta=after_total-before_total; if (delta <= 0) printf \"0.0\"; else printf \"%.1f\", 100*(delta-(after_idle-before_idle))/delta }')",
+  "mem_total=$(awk '/^MemTotal:/ { print $2 * 1024 }' /proc/meminfo)",
+  "mem_available=$(awk '/^MemAvailable:/ { print $2 * 1024 }' /proc/meminfo)",
+  'mem_used=$((mem_total - mem_available))',
+  "mem_percent=$(awk -v used=\"$mem_used\" -v total=\"$mem_total\" 'BEGIN { if (total > 0) printf \"%.1f\", used*100/total; else printf \"0.0\" }')",
+  "set -- $(df -Pk / | awk 'NR == 2 { gsub(/%/, \"\", $5); print $3 * 1024, $2 * 1024, $5 }')",
+  'disk_used=$1',
+  'disk_total=$2',
+  'disk_percent=$3',
+  "set -- $(awk -F '[: ]+' 'NR > 2 && $2 != \"lo\" { rx += $3; tx += $11 } END { printf \"%.0f %.0f\", rx, tx }' /proc/net/dev)",
+  'network_received=$1',
+  'network_sent=$2',
+  "printf 'FORGE_TELEMETRY_CHECKED_AT=%s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"",
+  "printf 'FORGE_TELEMETRY_CPU_PERCENT=%s\\n' \"$cpu_percent\"",
+  "printf 'FORGE_TELEMETRY_MEMORY_USED_BYTES=%s\\n' \"$mem_used\"",
+  "printf 'FORGE_TELEMETRY_MEMORY_TOTAL_BYTES=%s\\n' \"$mem_total\"",
+  "printf 'FORGE_TELEMETRY_MEMORY_PERCENT=%s\\n' \"$mem_percent\"",
+  "printf 'FORGE_TELEMETRY_DISK_USED_BYTES=%s\\n' \"$disk_used\"",
+  "printf 'FORGE_TELEMETRY_DISK_TOTAL_BYTES=%s\\n' \"$disk_total\"",
+  "printf 'FORGE_TELEMETRY_DISK_PERCENT=%s\\n' \"$disk_percent\"",
+  "printf 'FORGE_TELEMETRY_NETWORK_RECEIVED_BYTES=%s\\n' \"$network_received\"",
+  "printf 'FORGE_TELEMETRY_NETWORK_SENT_BYTES=%s\\n' \"$network_sent\"",
+  'if command -v openssl >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then',
+  "  tls_end_date=$(timeout 8 sh -c 'openssl s_client -connect \"$FORGE_TELEMETRY_SERVER_NAME:443\" -servername \"$FORGE_TELEMETRY_SERVER_NAME\" </dev/null 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null' 2>/dev/null | sed -n 's/^notAfter=//p' | head -n 1)",
+  "  if [ -n \"$tls_end_date\" ]; then printf 'FORGE_TELEMETRY_TLS_END_DATE=%s\\n' \"$tls_end_date\"; else printf 'FORGE_TELEMETRY_TLS_STATE=unavailable\\n'; fi",
+  'else',
+  "  printf 'FORGE_TELEMETRY_TLS_STATE=unavailable\\n'",
+  'fi',
+].join('\n');
+
 function clientFor(server) {
   return new Promise((resolve, reject) => {
     const conn = new Client();
@@ -157,4 +195,71 @@ async function checkRequirements(server) {
   return parseRequirementReport(result.stdout);
 }
 
-module.exports = { exec, uploadContent, testConnection, checkRequirements, parseRequirementReport };
+function parseTelemetryReport(output, checkedAt = new Date().toISOString()) {
+  const values = {};
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.match(/^FORGE_TELEMETRY_([A-Z_]+)=(.*)$/);
+    if (match) values[match[1]] = match[2].trim();
+  }
+
+  const number = (key) => {
+    if (values[key] === undefined || values[key] === '') return null;
+    const parsed = Number(values[key]);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  };
+  const percent = (value) => value === null ? null : Math.round(Math.min(100, value) * 10) / 10;
+  const ratioPercent = (used, total) => used === null || total === null || total === 0
+    ? null
+    : percent((used / total) * 100);
+  const memoryUsedBytes = number('MEMORY_USED_BYTES');
+  const memoryTotalBytes = number('MEMORY_TOTAL_BYTES');
+  const diskUsedBytes = number('DISK_USED_BYTES');
+  const diskTotalBytes = number('DISK_TOTAL_BYTES');
+  const rawTlsDate = values.TLS_END_DATE;
+  const tlsDate = rawTlsDate ? new Date(rawTlsDate) : null;
+  const tls = tlsDate && Number.isFinite(tlsDate.getTime())
+    ? { state: tlsDate.getTime() > Date.now() ? 'valid' : 'expired', expiresAt: tlsDate.toISOString() }
+    : { state: 'unavailable' };
+
+  return {
+    checkedAt: values.CHECKED_AT || checkedAt,
+    collector: 'ssh',
+    cpuPercent: percent(number('CPU_PERCENT')),
+    memory: {
+      usedBytes: memoryUsedBytes,
+      totalBytes: memoryTotalBytes,
+      percent: ratioPercent(memoryUsedBytes, memoryTotalBytes),
+    },
+    disk: {
+      usedBytes: diskUsedBytes,
+      totalBytes: diskTotalBytes,
+      percent: ratioPercent(diskUsedBytes, diskTotalBytes),
+    },
+    network: {
+      receivedBytes: number('NETWORK_RECEIVED_BYTES'),
+      sentBytes: number('NETWORK_SENT_BYTES'),
+    },
+    tls,
+  };
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+async function collectTelemetry(server) {
+  const command = `FORGE_TELEMETRY_SERVER_NAME=${shellQuote(server.host)}; export FORGE_TELEMETRY_SERVER_NAME\n${HOST_TELEMETRY_COMMAND}`;
+  const result = await exec(server, command, { timeoutMs: 30000 });
+  if (result.code !== 0) throw new Error(result.stderr || 'Host telemetry collection failed.');
+  return parseTelemetryReport(result.stdout);
+}
+
+module.exports = {
+  exec,
+  uploadContent,
+  testConnection,
+  checkRequirements,
+  parseRequirementReport,
+  collectTelemetry,
+  parseTelemetryReport,
+};

@@ -7,6 +7,7 @@ import type {
   ProjectDetail,
   Deployment,
   Server,
+  ServerTelemetry,
   SettingsData,
   AuditEvent,
   NewProjectForm,
@@ -172,6 +173,19 @@ export function useServers(enabled = true) {
         ? 4000
         : false
     },
+  })
+}
+
+export function useServerTelemetry(serverId: string | null) {
+  return useQuery({
+    queryKey: ['server-telemetry', serverId],
+    queryFn: async () =>
+      (await api.get<{ telemetry: ServerTelemetry }>(`/servers/${serverId}/telemetry`)).telemetry,
+    enabled: !!serverId,
+    staleTime: 15_000,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
+    retry: false,
   })
 }
 

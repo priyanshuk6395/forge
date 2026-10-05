@@ -14,6 +14,7 @@ delete process.env.AWS_ENDPOINT_URL;
 
 const express = require('express');
 const aws = require('../aws');
+const { encrypt } = require('../crypto');
 const db = require('../db');
 const ssh = require('../ssh');
 const serversRouter = require('./servers');
@@ -99,6 +100,110 @@ async function connect(baseUrl, credentials = {}) {
     }),
   });
 }
+
+test('telemetry report parses resource counters and certificate expiry', () => {
+  const report = ssh.parseTelemetryReport([
+    'FORGE_TELEMETRY_CHECKED_AT=2026-10-05T00:00:00Z',
+    'FORGE_TELEMETRY_CPU_PERCENT=23.5',
+    'FORGE_TELEMETRY_MEMORY_USED_BYTES=5000000',
+    'FORGE_TELEMETRY_MEMORY_TOTAL_BYTES=10000000',
+    'FORGE_TELEMETRY_DISK_USED_BYTES=12000000',
+    'FORGE_TELEMETRY_DISK_TOTAL_BYTES=100000000',
+    'FORGE_TELEMETRY_NETWORK_RECEIVED_BYTES=1000000',
+    'FORGE_TELEMETRY_NETWORK_SENT_BYTES=2000000',
+    'FORGE_TELEMETRY_TLS_END_DATE=Oct  5 00:00:00 2027 GMT',
+  ].join('\n'));
+
+  assert.deepEqual(report, {
+    checkedAt: '2026-10-05T00:00:00Z',
+    collector: 'ssh',
+    cpuPercent: 23.5,
+    memory: { usedBytes: 5000000, totalBytes: 10000000, percent: 50 },
+    disk: { usedBytes: 12000000, totalBytes: 100000000, percent: 12 },
+    network: { receivedBytes: 1000000, sentBytes: 2000000 },
+    tls: { state: 'valid', expiresAt: '2027-10-05T00:00:00.000Z' },
+  });
+});
+
+test('telemetry report preserves missing resource counters as unavailable', () => {
+  const report = ssh.parseTelemetryReport([
+    'FORGE_TELEMETRY_MEMORY_TOTAL_BYTES=10000000',
+    'FORGE_TELEMETRY_DISK_USED_BYTES=5000000',
+  ].join('\n'));
+
+  assert.equal(report.cpuPercent, null);
+  assert.equal(report.memory.percent, null);
+  assert.equal(report.disk.percent, null);
+  assert.equal(report.network.receivedBytes, null);
+  assert.equal(report.tls.state, 'unavailable');
+});
+
+test('telemetry endpoint returns collected metrics without exposing SSH credentials', async (t) => {
+  resetStore();
+  const encryptedKey = encrypt('test-only-private-key');
+  db.get().servers.push({
+    id: 'srv_telemetry',
+    name: 'Telemetry host',
+    host: '192.0.2.30',
+    sshUser: 'ubuntu',
+    sshPort: 22,
+    provider: 'existing',
+    status: 'ready',
+    sshKeyEnc: encryptedKey,
+  });
+  db.saveSync();
+
+  const telemetry = ssh.parseTelemetryReport([
+    'FORGE_TELEMETRY_CHECKED_AT=2026-10-05T00:00:00Z',
+    'FORGE_TELEMETRY_CPU_PERCENT=23.5',
+    'FORGE_TELEMETRY_MEMORY_USED_BYTES=5000000',
+    'FORGE_TELEMETRY_MEMORY_TOTAL_BYTES=10000000',
+    'FORGE_TELEMETRY_DISK_USED_BYTES=12000000',
+    'FORGE_TELEMETRY_DISK_TOTAL_BYTES=100000000',
+    'FORGE_TELEMETRY_NETWORK_RECEIVED_BYTES=1000000',
+    'FORGE_TELEMETRY_NETWORK_SENT_BYTES=2000000',
+    'FORGE_TELEMETRY_TLS_STATE=not_configured',
+  ].join('\n'));
+  let collectedServer;
+  mockSsh(t, {
+    collectTelemetry: async (server) => {
+      collectedServer = server;
+      return telemetry;
+    },
+  });
+
+  const baseUrl = await createApi(t);
+  const response = await fetch(`${baseUrl}/api/servers/srv_telemetry/telemetry`);
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(body, { telemetry });
+  assert.equal(collectedServer.sshKeyEnc, encryptedKey);
+  assert.doesNotMatch(JSON.stringify(body), /test-only-private-key|sshKeyEnc/);
+});
+
+test('telemetry endpoint returns a safe unavailable response for invalid stored credentials', async (t) => {
+  resetStore();
+  db.get().servers.push({
+    id: 'srv_invalid_telemetry',
+    name: 'Invalid telemetry host',
+    host: '192.0.2.31',
+    sshUser: 'ubuntu',
+    sshPort: 22,
+    provider: 'existing',
+    status: 'ready',
+    sshKeyEnc: 'malformed-encrypted-value',
+  });
+  db.saveSync();
+
+  const baseUrl = await createApi(t);
+  const response = await fetch(`${baseUrl}/api/servers/srv_invalid_telemetry/telemetry`);
+  const body = await response.json();
+
+  assert.equal(response.status, 503);
+  assert.match(body.error, /Verify SSH access and stored credentials/);
+  assert.doesNotMatch(JSON.stringify(body), /auth tag|ERR_CRYPTO|decrypt/i);
+});
 
 test('connect installs missing deployment tools and requires post-init readiness', async (t) => {
   resetStore();

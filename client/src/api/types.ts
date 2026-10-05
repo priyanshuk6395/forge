@@ -96,6 +96,30 @@ export interface Server {
   setupChecks?: ServerSetupChecks
 }
 
+export interface ServerTelemetry {
+  checkedAt: string
+  collector: 'ssh'
+  cpuPercent: number | null
+  memory: {
+    usedBytes: number | null
+    totalBytes: number | null
+    percent: number | null
+  }
+  disk: {
+    usedBytes: number | null
+    totalBytes: number | null
+    percent: number | null
+  }
+  network: {
+    receivedBytes: number | null
+    sentBytes: number | null
+  }
+  tls: {
+    state: 'valid' | 'expired' | 'unavailable'
+    expiresAt?: string
+  }
+}
+
 export interface ServerRequirementCheck {
   id: string
   label: string

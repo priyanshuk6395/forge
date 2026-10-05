@@ -162,7 +162,7 @@ export function StatusCenter({
             <p className="status-eyebrow">OBSERVABILITY</p>
             <h2 id="systems-heading">System signals</h2>
           </div>
-          <p className="status-section-note">Unknown means Forge does not collect that signal yet.</p>
+          <p className="status-section-note">No current signal is available in this overview. Host readings are sampled on demand in server details.</p>
         </div>
         <div className="system-signal-grid">
           {systems.map(({ label, state, icon: Icon }) => (
@@ -356,7 +356,7 @@ function ServerSummaryCard({ server, applications, applicationDetailsAvailable, 
         <span className="server-provider-line">{providerLabel}</span>
         <span className="server-fact-row">
           <span><span className="fact-label">Forge setup</span><SystemStateLabel state={server.status === 'ready' ? 'healthy' : server.status === 'bootstrap_failed' ? 'critical' : 'attention'} label={server.status === 'ready' ? 'Ready' : server.status.replace(/_/g, ' ')} /></span>
-          <span><span className="fact-label">Agent</span><SystemStateLabel state="unknown" label="Not installed" /></span>
+          <span><span className="fact-label">Collector</span><SystemStateLabel state="unknown" label="Agentless SSH" /></span>
         </span>
         <span className="server-data-line">
           <span>{applicationDetailsAvailable ? `${applications.length} ${applications.length === 1 ? 'application' : 'applications'}` : 'Applications unavailable'}</span>
@@ -364,7 +364,7 @@ function ServerSummaryCard({ server, applications, applicationDetailsAvailable, 
         </span>
         {server.statusError && <span className="server-summary-error">{server.statusError}</span>}
         {applications.length === 0 && applicationDetailsAvailable && !server.statusError && (
-          <span className="server-telemetry-note">Host metrics, network, and TLS are not reported.</span>
+          <span className="server-telemetry-note">Live host readings are collected over SSH in server details.</span>
         )}
         <span className="server-card-link">View server health <ArrowRight aria-hidden="true" /></span>
       </button>
@@ -444,7 +444,7 @@ function getOverallMessage(data: DashboardData, servers: Server[]) {
       ? 'Forge is online, but one or more applications do not have a current health signal.'
       : 'Forge is online. Connect a server and deploy an application to begin health checks.'
   }
-  return 'Application health checks are passing. Host resource, agent, network, and TLS telemetry are not currently collected.'
+  return 'Application health checks are passing. Host readings are sampled on demand over SSH; no persistent monitoring agent is installed.'
 }
 
 function formatActivity(action: string) {

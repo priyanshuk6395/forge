@@ -91,13 +91,26 @@ async function mockDashboard(page: Page, body: ReturnType<typeof emptyDashboard>
   await page.route('**/api/dashboard', (route) => route.fulfill({ json: body }))
 }
 
-test('partial status stays neutral and server health explains missing telemetry', async ({ page }) => {
+test('partial status stays neutral and server health displays live telemetry', async ({ page }) => {
   await mockDashboard(page, emptyDashboard())
+  await page.route('**/api/servers/srv_e2e/telemetry', (route) => route.fulfill({
+    json: {
+      telemetry: {
+        checkedAt: '2026-10-05T00:00:00Z',
+        collector: 'ssh',
+        cpuPercent: 23.5,
+        memory: { usedBytes: 5000000000, totalBytes: 10000000000, percent: 50 },
+        disk: { usedBytes: 12000000000, totalBytes: 100000000000, percent: 12 },
+        network: { receivedBytes: 1048576, sentBytes: 2097152 },
+        tls: { state: 'valid', expiresAt: '2027-10-05T00:00:00.000Z' },
+      },
+    },
+  }))
   await signIn(page)
 
   await expect(page.getByRole('heading', { name: 'Status is partially known' })).toBeVisible()
   await expect(page.getByText('Connect an application to begin health checks.')).toBeVisible()
-  await expect(page.getByText('Unknown means Forge does not collect that signal yet.')).toBeVisible()
+  await expect(page.getByText('No current signal is available in this overview. Host readings are sampled on demand in server details.')).toBeVisible()
 
   await page.getByRole('button', { name: 'Open health details for E2E Server' }).click()
   await expect(page.getByRole('heading', { name: 'E2E Server', exact: true })).toBeVisible()
@@ -107,13 +120,32 @@ test('partial status stays neutral and server health explains missing telemetry'
   await expect(setupChecks.getByText('All requirements ready')).toBeVisible()
   await expect(setupChecks.locator('.setup-check-phase').nth(1).locator('[data-state="ready"]')).toHaveCount(8)
   const cpu = page.locator('.telemetry-fact').filter({ hasText: 'CPU' })
-  await expect(cpu).toContainText('Not reported')
-  await expect(page.getByText('no host agent for resource or certificate telemetry')).toBeVisible()
+  await expect(cpu).toContainText('23.5% used')
+  await expect(page.locator('.telemetry-fact').filter({ hasText: 'Memory' })).toContainText('50.0%')
+  await expect(page.locator('.telemetry-fact').filter({ hasText: 'Network' })).toContainText('Rx 1.0 MiB · Tx 2.0 MiB')
+  await expect(page.locator('.telemetry-fact').filter({ hasText: 'SSL / TLS' })).toContainText('Valid · 2027-10-05')
+  await expect(page.locator('.telemetry-fact').filter({ hasText: 'Collector' })).toContainText('Agentless SSH')
+  await expect(page.getByText(/Network totals are cumulative since boot/)).toBeVisible()
 
   await page.getByRole('button', { name: 'Remove from Forge' }).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog).toContainText('does not stop or terminate the host')
   await dialog.getByRole('button', { name: 'Cancel' }).click()
+})
+
+test('server health explains when live SSH telemetry cannot be collected', async ({ page }) => {
+  await mockDashboard(page, emptyDashboard())
+  await page.route('**/api/servers/srv_e2e/telemetry', (route) => route.fulfill({
+    status: 503,
+    json: { error: 'SSH connection refused.' },
+  }))
+  await signIn(page)
+
+  await page.getByRole('button', { name: 'Open health details for E2E Server' }).click()
+  const telemetry = page.getByRole('region', { name: 'Resource health' })
+  await expect(telemetry.getByText('SSH unavailable').first()).toBeVisible()
+  await expect(telemetry.locator('.telemetry-fact').filter({ hasText: 'Collector' })).toContainText('SSH unavailable')
+  await expect(page.getByText(/Live telemetry could not be collected over SSH: SSH connection refused/)).toBeVisible()
 })
 
 test('legacy dashboard payload shows missing application details without crashing', async ({ page }) => {
