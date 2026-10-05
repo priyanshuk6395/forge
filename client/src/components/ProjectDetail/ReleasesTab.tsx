@@ -1,5 +1,6 @@
 import { DeploymentStatusPill } from './DeploymentStatusPill'
 import { timeAgo } from '@/lib/utils'
+import { Loader2 } from 'lucide-react'
 
 interface ReleasesTabProps {
   project: any
@@ -27,8 +28,20 @@ export function ReleasesTab({ project, latestDeployment, isBuilding, onRollback 
         <td className="font-medium px-3 py-2">#{d.number}</td>
         <td className="font-mono text-sm px-3 py-2">{d.commitSha || '—'}</td>
         <td className="px-3 py-2">
-          <DeploymentStatusPill status={d.status} />
-          {isBuilding && isCurrent && <span className="w-4 h-4 animate-spin ml-2 inline" />}
+          <div className="release-status-stack">
+            <DeploymentStatusPill status={d.status} />
+            {isBuilding && isCurrent && (
+              <p className="release-progress" role="status" aria-live="polite">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                Build and health checks are running.
+              </p>
+            )}
+            {d.error && (
+              <p className="deployment-error" role={isCurrent ? 'alert' : 'note'}>
+                {d.error}
+              </p>
+            )}
+          </div>
         </td>
         <td className="text-sm px-3 py-2">{d.trigger}</td>
         <td className="text-sm text-[var(--color-text-muted)] px-3 py-2">{timeAgo(d.startedAt)}</td>

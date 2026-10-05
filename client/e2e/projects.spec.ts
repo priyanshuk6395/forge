@@ -3,6 +3,27 @@ import path from 'node:path'
 import { expect, test } from '@playwright/test'
 import { apiCall, mockGitHub, signIn } from './helpers'
 
+test('GitHub loading failures use a dismissible toast without an uncaught page error', async ({ page }) => {
+  const pageErrors: string[] = []
+  page.on('pageerror', (error) => pageErrors.push(error.message))
+  await page.route('**/api/github/repos', (route) => route.fulfill({
+    status: 400,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: 'GitHub is not connected. Add a personal access token in Settings.' }),
+  }))
+
+  await signIn(page)
+  await page.getByRole('button', { name: 'Projects', exact: true }).click()
+  await page.getByRole('button', { name: 'New project' }).first().click()
+
+  const notification = page.getByRole('alert').filter({ hasText: 'GitHub is not connected.' })
+  await expect(notification).toBeVisible()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  expect(pageErrors).toEqual([])
+  await notification.getByRole('button', { name: 'Dismiss notification' }).click()
+  await expect(notification).toHaveCount(0)
+})
+
 test('create project, protect secrets, update settings, and record audit events', async ({ page }, testInfo) => {
   await mockGitHub(page)
   await signIn(page)
@@ -58,7 +79,7 @@ test('create project, protect secrets, update settings, and record audit events'
   expect(unconfirmedDelete.status).toBe(400)
   expect(unconfirmedDelete.body.error).toContain('confirm: true')
 
-  await page.getByRole('button', { name: 'Audit log', exact: true }).click()
+  await page.getByRole('button', { name: 'Activity', exact: true }).click()
   const audit = await apiCall(page, 'GET', '/api/audit')
   expect(audit.status).toBe(200)
   expect(audit.body.events.map((event: { action: string }) => event.action)).toEqual(
@@ -73,4 +94,55 @@ test('create project, protect secrets, update settings, and record audit events'
 
   const removedSecrets = await apiCall(page, 'GET', `/api/projects/${project.id}/secrets`)
   expect(removedSecrets.body).toEqual({ keys: [] })
+
+  let deploymentNumber = 0
+  let projectDetailReads = 0
+  await page.route('**/api/projects/**', async (route) => {
+    const pathname = new URL(route.request().url()).pathname
+    const deployPath = `/api/projects/${project.id}/deploy`
+    const detailPath = `/api/projects/${project.id}`
+
+    if (route.request().method() === 'POST' && pathname === deployPath) {
+      deploymentNumber += 1
+      projectDetailReads = 0
+      const deploymentId = `dep_e2e_${deploymentNumber}`
+      await route.fulfill({
+        status: 202,
+        json: { deployment: { id: deploymentId, number: deploymentNumber, status: 'building', trigger: 'manual', startedAt: new Date().toISOString() } },
+      })
+      return
+    }
+
+    if (route.request().method() === 'GET' && pathname === detailPath && deploymentNumber > 0) {
+      const response = await route.fetch()
+      const detail = await response.json()
+      const status = projectDetailReads++ === 0 ? 'building' : deploymentNumber === 1 ? 'failed' : 'success'
+      const deploymentId = `dep_e2e_${deploymentNumber}`
+      detail.project.currentDeploymentId = deploymentId
+      detail.deployments = [{
+        id: deploymentId,
+        number: deploymentNumber,
+        status,
+        trigger: 'manual',
+        startedAt: new Date().toISOString(),
+        error: status === 'failed' ? 'SSH key rejected by the target server' : null,
+      }]
+      await route.fulfill({ response, json: detail })
+      return
+    }
+
+    await route.continue()
+  })
+
+  await page.getByRole('tab', { name: 'Releases' }).click()
+  await page.getByRole('button', { name: 'Deploy', exact: true }).click()
+  await expect(page.getByText('Deployment queued. Progress is in Releases.')).toBeVisible()
+  await expect(page.locator('.release-progress')).toContainText('Build and health checks are running')
+  await expect(page.getByRole('alert').filter({ hasText: 'SSH key rejected by the target server' })).toBeVisible({ timeout: 10_000 })
+
+  await page.getByRole('button', { name: 'Deploy', exact: true }).click()
+  await expect(page.locator('.release-progress')).toContainText('Build and health checks are running')
+  await expect(page.getByRole('button', { name: 'Deploy', exact: true })).toBeDisabled()
+  const successfulRelease = page.getByRole('row').filter({ hasText: '#2' })
+  await expect(successfulRelease.getByText('success', { exact: true })).toBeVisible({ timeout: 10_000 })
 })

@@ -1,30 +1,35 @@
-import { X } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, CircleAlert, Info, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
+
+export type ToastType = 'default' | 'success' | 'error' | 'info' | 'warning' | 'critical'
 
 export interface ToastProps {
   message: string
-  type?: 'default' | 'success' | 'error'
+  type?: ToastType
   onClose: () => void
 }
 
 export function Toast({ message, type = 'default', onClose }: ToastProps) {
+  const Icon = type === 'success' ? CheckCircle2 : type === 'warning' ? AlertTriangle : type === 'error' || type === 'critical' ? CircleAlert : Info
   return (
     <div
       className={cn(
-        'flex items-start gap-3 p-3 rounded-lg border max-w-sm shadow-lg animate-in slide-in-from-right',
-        type === 'error' && 'border-red-500 bg-red-900/30 text-red-300',
-        type === 'success' && 'border-green-500 bg-green-900/30 text-green-300',
-        type === 'default' && 'border-gray-600 bg-gray-800 text-gray-100'
+        'toast animate-in slide-in-from-right',
+        `toast-${type}`
       )}
-      role="alert"
+      role={type === 'error' || type === 'critical' ? 'alert' : 'status'}
+      aria-live={type === 'error' || type === 'critical' ? 'assertive' : 'polite'}
+      aria-atomic="true"
     >
-      <div className="flex-1 text-sm">{message}</div>
+      <Icon aria-hidden="true" />
+      <p>{message}</p>
       <button
+        type="button"
         onClick={onClose}
-        className="text-gray-400 hover:text-gray-200 transition-colors"
-        aria-label="Dismiss"
+        className="toast-dismiss"
+        aria-label="Dismiss notification"
       >
-        <X className="w-4 h-4" />
+        <X aria-hidden="true" />
       </button>
     </div>
   )

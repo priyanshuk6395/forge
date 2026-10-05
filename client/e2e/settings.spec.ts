@@ -32,7 +32,26 @@ test('AWS Moto connection, encrypted credential settings, and unconfigured GitHu
   await page.getByRole('button', { name: 'Test EC2 connection' }).click()
   await expect(page.getByText('Local EC2 API is reachable')).toBeVisible()
 
-  await page.getByRole('button', { name: 'Audit log', exact: true }).click()
+  await page.getByRole('button', { name: 'Servers', exact: true }).click()
+  const recoveredServers = await apiCall(page, 'GET', '/api/servers')
+  const recoveredServer = recoveredServers.body.servers.find((server: { id: string }) => server.id === 'srv_moto_stuck')
+  expect(recoveredServer).toMatchObject({ status: 'bootstrap_failed' })
+  expect(recoveredServer.statusError).toMatch(/local AWS emulator.*does not boot a Linux guest/i)
+
+  await page.getByRole('button', { name: 'Provision on AWS' }).first().click()
+  const provisionDialog = page.getByRole('dialog')
+  await provisionDialog.getByLabel('Name').fill('Moto guest check')
+  await provisionDialog.getByRole('button', { name: 'Provision', exact: true }).click()
+  await expect(provisionDialog).toBeHidden({ timeout: 15_000 })
+  const motoRow = page.getByRole('row').filter({ hasText: 'Moto guest check' })
+  await expect(motoRow.getByText(/local AWS emulator.*does not boot a Linux guest/i)).toBeVisible()
+
+  const servers = await apiCall(page, 'GET', '/api/servers')
+  const motoServer = servers.body.servers.find((server: { name: string }) => server.name === 'Moto guest check')
+  expect(motoServer).toMatchObject({ status: 'bootstrap_failed' })
+  expect(motoServer.statusError).toMatch(/does not boot a Linux guest/i)
+
+  await page.getByRole('button', { name: 'Activity', exact: true }).click()
   const audit = await apiCall(page, 'GET', '/api/audit')
   expect(audit.body.events.map((event: { action: string }) => event.action)).toContain(
     'settings.aws.updated'

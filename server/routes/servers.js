@@ -17,35 +17,81 @@ const BOOTSTRAP_SCRIPT = fs.readFileSync(
   path.join(__dirname, '..', 'remote-scripts', 'bootstrap-server.sh'),
   'utf8'
 );
+const LOCAL_EMULATOR_BOOTSTRAP_ERROR =
+  'The local AWS emulator accepted the EC2 launch request but does not boot a Linux guest for SSH setup. Use real AWS to provision a managed server, or connect an existing Linux host.';
 
+const BOOTSTRAP_PREREQUISITES = new Set(['platform', 'privilege', 'apt-get', 'systemd']);
 function toPublic(server) {
-  const { sshKeyEnc, sshPasswordEnc, ...rest } = server;
+  const { sshKeyEnc, sshKeyPassphraseEnc, sshPasswordEnc, ...rest } = server;
   return { ...rest, hasKey: !!sshKeyEnc, hasPassword: !!sshPasswordEnc };
 }
 
+function failPendingEmulatorProvisioning() {
+  if (!aws.isLocalEmulatorEndpoint()) return;
+
+  const pending = db.get().servers.filter((server) =>
+    server.provider === 'ec2' && (
+      server.status === 'provisioning' ||
+      (server.status === 'bootstrap_failed' && server.statusError?.startsWith('Server did not finish bootstrapping in time.'))
+    )
+  );
+  if (!pending.length) return;
+
+  for (const server of pending) {
+    server.status = 'bootstrap_failed';
+    server.statusError = LOCAL_EMULATOR_BOOTSTRAP_ERROR;
+  }
+  db.saveSync();
+}
+
+function checkFailures(check, ids) {
+  return check.checks
+    .filter((item) => (!ids || ids.has(item.id)) && item.state !== 'ready')
+    .map((item) => item.label);
+}
+
+function postInitFailure(check) {
+  const failures = checkFailures(check);
+  return `Post-initialization checks failed: ${failures.join(', ')}. The server was not marked ready.`;
+}
+
+failPendingEmulatorProvisioning();
+
 router.get('/', (req, res) => {
+  failPendingEmulatorProvisioning();
   res.json({ servers: db.get().servers.map(toPublic) });
 });
 
 router.get('/:id', (req, res) => {
+  failPendingEmulatorProvisioning();
   const server = db.get().servers.find((s) => s.id === req.params.id);
   if (!server) return res.status(404).json({ error: 'Server not found.' });
   res.json({ server: toPublic(server) });
 });
 
-async function waitForBootstrap(server, { timeoutMs = 3 * 60 * 1000 } = {}) {
+async function waitForBootstrap(server, { timeoutMs = 10 * 60 * 1000 } = {}) {
   const start = Date.now();
   let lastErr = null;
   while (Date.now() - start < timeoutMs) {
+    let bootstrapReady = false;
     try {
       const result = await ssh.exec(
         server,
         'test -f /opt/forge-apps/.bootstrap-ok && echo ready || echo pending',
         { timeoutMs: 15000 }
       );
-      if (result.stdout.includes('ready')) return true;
+      bootstrapReady = result.stdout.includes('ready');
     } catch (e) {
       lastErr = e;
+    }
+
+    if (bootstrapReady) {
+      const preInitResult = await ssh.exec(server, 'cat /opt/forge-apps/.forge-pre-init-checks', { timeoutMs: 15000 });
+      if (preInitResult.code !== 0) throw new Error('Bootstrap completed without a pre-initialization requirement report.');
+      return {
+        preInit: ssh.parseRequirementReport(preInitResult.stdout),
+        postInit: await ssh.checkRequirements(server),
+      };
     }
     await new Promise((r) => setTimeout(r, 5000));
   }
@@ -57,7 +103,7 @@ async function waitForBootstrap(server, { timeoutMs = 3 * 60 * 1000 } = {}) {
 router.post(
   '/connect',
   asyncHandler(async (req, res) => {
-    const { name, host, sshUser = 'ubuntu', sshPort = 22, privateKey, password } = req.body || {};
+    const { name, host, sshUser = 'ubuntu', sshPort = 22, privateKey, keyPassphrase, password } = req.body || {};
     assert(name && name.length <= 60, 'Name is required.');
     assert(isValidHost(host), 'Enter a valid IP address or hostname.');
     assert(isValidSshUser(sshUser), 'Invalid SSH username.');
@@ -74,7 +120,10 @@ router.post(
       status: 'connecting',
       createdAt: new Date().toISOString(),
     };
-    if (privateKey) server.sshKeyEnc = encrypt(privateKey);
+    if (privateKey) {
+      server.sshKeyEnc = encrypt(privateKey);
+      if (keyPassphrase) server.sshKeyPassphraseEnc = encrypt(keyPassphrase);
+    }
     if (password) server.sshPasswordEnc = encrypt(password);
 
     try {
@@ -83,13 +132,33 @@ router.post(
       throw new ValidationError(`Could not connect over SSH: ${e.message}`);
     }
 
-    // Bootstrap immediately — the user is already watching a spinner for
-    // "connecting", and this only ever runs once per server.
+    let preInit;
+    try {
+      preInit = await ssh.checkRequirements(server);
+    } catch (e) {
+      throw new ValidationError(`SSH connected, but the pre-initialization check failed: ${e.message}`);
+    }
+    if (!preInit.canInitialize) {
+      const missing = checkFailures(preInit, BOOTSTRAP_PREREQUISITES);
+      throw new ValidationError(
+        `Forge cannot initialize this host. Missing prerequisites: ${missing.join(', ')}. Use Debian or Ubuntu with systemd and root or passwordless sudo.`
+      );
+    }
+
     try {
       await ssh.uploadContent(server, BOOTSTRAP_SCRIPT, '/tmp/forge-bootstrap.sh', 0o700);
-      await ssh.exec(server, 'bash /tmp/forge-bootstrap.sh && touch /opt/forge-apps/.bootstrap-ok', {
+      const passwordAuth = !server.sshKeyEnc && server.sshPasswordEnc ? 'true' : 'false';
+      const installResult = await ssh.exec(server, `FORGE_SSH_USER=${server.sshUser} FORGE_SSH_PASSWORD_AUTH=${passwordAuth} bash /tmp/forge-bootstrap.sh`, {
         timeoutMs: 5 * 60 * 1000,
       });
+      if (installResult.code !== 0) {
+        throw new Error(installResult.stderr || `Initialization exited with code ${installResult.code}.`);
+      }
+      const postInit = await ssh.checkRequirements(server);
+      server.setupChecks = { preInit, postInit };
+      if (!postInit.ready) throw new Error(postInitFailure(postInit));
+      const marker = await ssh.exec(server, 'touch /opt/forge-apps/.bootstrap-ok', { timeoutMs: 15000 });
+      if (marker.code !== 0) throw new Error('Could not write the Forge bootstrap completion marker.');
     } catch (e) {
       throw new ValidationError(`Connected, but the server setup script failed: ${e.message}`);
     }
@@ -113,8 +182,10 @@ router.post(
       name,
       instanceType,
       sshCidr,
-      appPort: appPort ? Number(appPort) : undefined,
-      bootstrapUserData: BOOTSTRAP_SCRIPT + '\ntouch /opt/forge-apps/.bootstrap-ok\n',
+      bootstrapUserData: BOOTSTRAP_SCRIPT.replace(
+        '#!/bin/bash',
+        '#!/bin/bash\nexport FORGE_SSH_USER=ubuntu\nexport FORGE_SSH_PASSWORD_AUTH=false'
+      ) + '\ntouch /opt/forge-apps/.bootstrap-ok\n',
     });
 
     const server = {
@@ -141,8 +212,14 @@ router.post(
       meta: { instanceId: server.instanceId },
     });
 
+    if (aws.isLocalEmulatorEndpoint()) {
+      failPendingEmulatorProvisioning();
+      return res.json({ server: toPublic(server) });
+    }
+
     try {
-      await waitForBootstrap(server);
+      server.setupChecks = await waitForBootstrap(server);
+      if (!server.setupChecks.postInit.ready) throw new Error(postInitFailure(server.setupChecks.postInit));
       server.status = 'ready';
     } catch (e) {
       server.status = 'bootstrap_failed';

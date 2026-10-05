@@ -28,6 +28,28 @@ function getEndpoint() {
   return process.env.FORGE_AWS_ENDPOINT_URL || process.env.AWS_ENDPOINT_URL || null;
 }
 
+function isLocalEmulatorEndpoint() {
+  const endpoint = getEndpoint();
+  if (!endpoint) return false;
+
+  try {
+    const hostname = new URL(endpoint).hostname.toLowerCase();
+    return new Set([
+      'localhost',
+      '127.0.0.1',
+      '::1',
+      '[::1]',
+      'aws-mock',
+      'moto',
+      'motoserver',
+      'localstack',
+      'host.docker.internal',
+    ]).has(hostname) || hostname.endsWith('.local') || hostname.endsWith('.localhost');
+  } catch {
+    return false;
+  }
+}
+
 // Uses explicit keys from Settings if present; otherwise falls back to the
 // default provider chain, which picks up an EC2 instance profile automatically
 // when Forge itself is running on an EC2 instance with one attached.
@@ -266,6 +288,7 @@ async function provisionServer({ name, instanceType = 't3.micro', sshCidr, appPo
 module.exports = {
   getRegion,
   getEndpoint,
+  isLocalEmulatorEndpoint,
   makeClient,
   isConfigured,
   checkConnection,

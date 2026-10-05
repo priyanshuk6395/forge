@@ -3,6 +3,19 @@
 const { Client } = require('ssh2');
 const { decrypt, redact } = require('./crypto');
 
+const REQUIREMENT_CHECK_COMMAND = [
+  'if [ -r /etc/os-release ]; then . /etc/os-release; else ID=unknown; ID_LIKE=; fi',
+  "printf 'FORGE_CHECK_CHECKED_AT=%s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"",
+  "printf 'FORGE_CHECK_PLATFORM=%s\\n' \"${ID:-unknown}\"",
+  "printf 'FORGE_CHECK_PLATFORM_LIKE=%s\\n' \"${ID_LIKE:-}\"",
+  "if [ \"$(id -u)\" -eq 0 ] || (command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1); then printf 'FORGE_CHECK_PRIVILEGE=ready\\n'; else printf 'FORGE_CHECK_PRIVILEGE=missing\\n'; fi",
+  "if command -v apt-get >/dev/null 2>&1; then printf 'FORGE_CHECK_APT_GET=ready\\n'; else printf 'FORGE_CHECK_APT_GET=missing\\n'; fi",
+  "if command -v systemctl >/dev/null 2>&1; then printf 'FORGE_CHECK_SYSTEMD=ready\\n'; else printf 'FORGE_CHECK_SYSTEMD=missing\\n'; fi",
+  "if command -v docker >/dev/null 2>&1; then printf 'FORGE_CHECK_DOCKER=ready\\n'; if docker info >/dev/null 2>&1; then printf 'FORGE_CHECK_DOCKER_DAEMON=ready\\n'; else printf 'FORGE_CHECK_DOCKER_DAEMON=missing\\n'; fi; else printf 'FORGE_CHECK_DOCKER=missing\\nFORGE_CHECK_DOCKER_DAEMON=missing\\n'; fi",
+  "if command -v git >/dev/null 2>&1; then printf 'FORGE_CHECK_GIT=ready\\n'; else printf 'FORGE_CHECK_GIT=missing\\n'; fi",
+  "if command -v curl >/dev/null 2>&1; then printf 'FORGE_CHECK_CURL=ready\\n'; else printf 'FORGE_CHECK_CURL=missing\\n'; fi",
+].join('\n');
+
 function clientFor(server) {
   return new Promise((resolve, reject) => {
     const conn = new Client();
@@ -103,4 +116,45 @@ async function testConnection(server) {
   return result.stdout.trim();
 }
 
-module.exports = { exec, uploadContent, testConnection };
+function parseRequirementReport(output, checkedAt = new Date().toISOString()) {
+  const values = {};
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.match(/^FORGE_CHECK_([A-Z_]+)=(.*)$/);
+    if (match) values[match[1]] = match[2].trim();
+  }
+
+  const platformId = values.PLATFORM || 'unknown';
+  const platformLike = (values.PLATFORM_LIKE || '').split(/\s+/);
+  const supportedPlatforms = new Set(['debian', 'ubuntu']);
+  const supportedPlatform = supportedPlatforms.has(platformId) || platformLike.some((id) => supportedPlatforms.has(id));
+  const state = (value) => value === 'ready' ? 'ready' : 'missing';
+  const checks = [
+    { id: 'platform', label: 'Debian or Ubuntu', state: supportedPlatform ? 'ready' : 'unsupported' },
+    { id: 'privilege', label: 'Root or passwordless sudo', state: state(values.PRIVILEGE) },
+    { id: 'apt-get', label: 'APT package manager', state: state(values.APT_GET) },
+    { id: 'systemd', label: 'systemd service manager', state: state(values.SYSTEMD) },
+    { id: 'docker', label: 'Docker Engine', state: state(values.DOCKER) },
+    { id: 'docker-daemon', label: 'Docker daemon', state: state(values.DOCKER_DAEMON) },
+    { id: 'git', label: 'Git', state: state(values.GIT) },
+    { id: 'curl', label: 'curl', state: state(values.CURL) },
+  ];
+  const initializationPrerequisites = new Set(['platform', 'privilege', 'apt-get', 'systemd']);
+  const canInitialize = checks
+    .filter((check) => initializationPrerequisites.has(check.id))
+    .every((check) => check.state === 'ready');
+
+  return {
+    checkedAt: values.CHECKED_AT || checkedAt,
+    platform: platformId,
+    canInitialize,
+    ready: canInitialize && checks.every((check) => check.state === 'ready'),
+    checks,
+  };
+}
+
+async function checkRequirements(server) {
+  const result = await exec(server, REQUIREMENT_CHECK_COMMAND, { timeoutMs: 30000 });
+  return parseRequirementReport(result.stdout);
+}
+
+module.exports = { exec, uploadContent, testConnection, checkRequirements, parseRequirementReport };

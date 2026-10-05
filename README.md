@@ -141,6 +141,11 @@ API calls; Moto does not boot an operating system, provide a working guest
 SSH server, or run Forge's remote bootstrap/deploy flow. Those workflows need
 a real EC2 instance or an SSH-accessible Linux server.
 
+When Forge provisions through a local AWS emulator, it records the successful
+EC2 API launch and immediately marks guest bootstrap as unavailable with an
+explanation. It does not wait for an SSH timeout; use real AWS for a deployable
+instance or connect an existing Linux server.
+
 Stop the emulator with `docker compose down`. It stores mock state in the
 container's memory, so resources created during a test do not persist after
 the container is removed.
@@ -154,9 +159,12 @@ the container is removed.
    no separate GitHub App registration needed.
 
 2. **Servers**: either
-   - **Connect existing** — point Forge at any Linux box you can already
-     SSH into (IP + username + private key). Forge installs Docker and a
-     firewall on it automatically the first time.
+   - **Connect existing** — point Forge at a Debian or Ubuntu host you can
+     already SSH into (IP + username + private key or password). Forge checks
+     root/passwordless-sudo, APT, systemd, Docker, Git, and curl before setup;
+     it installs missing deployment tools, then checks them again before the
+     host is marked ready. Unsupported hosts or incomplete installs stay
+     unready with the failed requirements shown in Server Health.
    - **Provision on AWS** — Forge creates the EC2 instance, key pair,
      and security group for you, using either AWS keys you paste into
      Settings → AWS, or (if Forge itself is running on an EC2 instance with
@@ -259,8 +267,9 @@ Pop-Location
   generated uniquely per install (`npm run setup`) — never committed to git.
 - The deploy pipeline validates every value that reaches a remote shell
   command (slugs, branch names, ports, env var names) before it's used.
-- Target servers get `ufw` (deny-by-default, SSH + HTTP/S allowed),
-  automatic security updates, and password SSH auth disabled.
+- Target servers get `ufw` (deny-by-default, SSH + HTTP/S allowed) and
+  automatic security updates. Password SSH auth is disabled when Forge
+  connects with a key; it is preserved when password credentials are used.
 - The session cookie is `HttpOnly`, host-only, and `SameSite=Lax`. It is
   marked `Secure` for HTTPS requests, including TLS terminated by a trusted
   reverse proxy; the direct HTTP EC2 user-data setup remains compatible.

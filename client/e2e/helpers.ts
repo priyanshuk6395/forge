@@ -14,7 +14,7 @@ export async function signIn(page: Page) {
     await page.getByRole('button', { name: 'Sign in' }).click()
   }
 
-  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Status', exact: true })).toBeVisible()
 }
 
 export async function mockGitHub(page: Page) {

@@ -10,8 +10,8 @@ test('owner setup, protected API access, logout, and login', async ({ page }) =>
   await page.getByLabel('Username').fill('forge-owner')
   await page.getByLabel('Password').fill('forge-e2e-password')
   await page.getByRole('button', { name: 'Create owner account' }).click()
-  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible()
-  await expect(page.getByText('Control plane ready. Add a project to begin.')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Status' })).toBeVisible()
+  await expect(page.getByText('E2E Server', { exact: true })).toBeVisible()
 
   const sessionCookie = (await page.context().cookies()).find((cookie) => cookie.name === 'forge_sid')
   expect(sessionCookie).toBeDefined()
@@ -39,7 +39,7 @@ test('owner setup, protected API access, logout, and login', async ({ page }) =>
 
   await page.getByLabel('Password').fill('forge-e2e-password')
   await page.getByRole('button', { name: 'Sign in' }).click()
-  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Status' })).toBeVisible()
 
   const authenticatedDashboard = await page.request.get('/api/dashboard', {
     headers: { 'X-Forge-Client': '1' },

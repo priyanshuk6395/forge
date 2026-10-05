@@ -1,11 +1,43 @@
-export type HealthState = 'healthy' | 'attention' | 'critical'
+export type HealthState = 'healthy' | 'attention' | 'critical' | 'unknown'
+export type SystemState = HealthState
+
+export interface IncidentSummary {
+  id: string
+  projectId: string
+  startedAt: string
+  resolvedAt: string | null
+  status: 'open' | 'resolved'
+  cause?: string | null
+  restartAttempts: number
+}
+
+export interface ApplicationStatus {
+  id: string
+  name: string
+  repoFullName: string
+  branch: string
+  serverId: string | null
+  port: number
+  hostPort: number
+  health: HealthState
+  healthError: string | null
+  consecutiveFailures: number
+  lastCheckedAt: string | null
+  lastDeployedAt: string | null
+  currentDeployment: Pick<Deployment, 'id' | 'number' | 'status' | 'commitSha' | 'startedAt' | 'error'> | null
+  previousSuccessfulDeployment: Pick<Deployment, 'id' | 'number' | 'commitSha'> | null
+}
 
 export interface DashboardData {
+  generatedAt: string
   overall: HealthState
-  components: Partial<Record<'application' | 'server' | 'security' | 'network' | 'ssl' | 'deployment', HealthState>>
+  components: Partial<Record<'forge' | 'application' | 'server' | 'security' | 'network' | 'ssl' | 'agent' | 'deployment', HealthState>>
   projectCount: number
+  projectCountAvailable?: boolean
   serverCount: number
-  openIncidents: number
+  applications: ApplicationStatus[]
+  applicationDetailsAvailable?: boolean
+  openIncidents: IncidentSummary[]
   recentActivity: ActivityEntry[]
 }
 
@@ -42,7 +74,7 @@ export interface Deployment {
   id: string
   number: number
   status: 'building' | 'success' | 'failed' | 'blocked'
-  commitSha: string
+  commitSha: string | null
   trigger: 'github' | 'manual'
   startedAt: string
   error?: string
@@ -53,9 +85,34 @@ export interface Server {
   id: string
   name: string
   host: string
+  sshUser?: string
+  sshPort?: number
   provider: 'ec2' | 'existing'
   status: 'ready' | 'connecting' | 'provisioning' | 'bootstrap_failed'
   hasKey: boolean
+  statusError?: string
+  instanceId?: string
+  region?: string
+  setupChecks?: ServerSetupChecks
+}
+
+export interface ServerRequirementCheck {
+  id: string
+  label: string
+  state: 'ready' | 'missing' | 'unsupported'
+}
+
+export interface ServerRequirementReport {
+  checkedAt: string
+  platform: string
+  canInitialize: boolean
+  ready: boolean
+  checks: ServerRequirementCheck[]
+}
+
+export interface ServerSetupChecks {
+  preInit: ServerRequirementReport
+  postInit: ServerRequirementReport
 }
 
 export interface GitHubSettings {
@@ -115,6 +172,7 @@ export interface ConnectServerForm {
   sshUser: string
   sshPort: number
   privateKey: string
+  keyPassphrase?: string
 }
 
 export interface ProvisionServerForm {

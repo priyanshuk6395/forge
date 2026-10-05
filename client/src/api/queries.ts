@@ -23,10 +23,6 @@ type ProjectResponse = Omit<Project, 'health'> & {
   currentDeploymentId?: string | null
 }
 
-type DashboardResponse = Omit<DashboardData, 'openIncidents'> & {
-  openIncidents: number | unknown[]
-}
-
 function normalizeHealth(value: unknown): Project['health'] {
   const state =
     typeof value === 'string'
@@ -37,7 +33,8 @@ function normalizeHealth(value: unknown): Project['health'] {
 
   if (state === 'healthy') return 'healthy'
   if (state === 'critical' || state === 'unhealthy') return 'critical'
-  return 'attention'
+  if (state === 'attention') return 'attention'
+  return 'unknown'
 }
 
 function normalizeProject(project: ProjectResponse): Project {
@@ -82,14 +79,25 @@ export function useLogout() {
 export function useDashboard(enabled = true) {
   return useQuery({
     queryKey: ['dashboard'],
-    queryFn: async () => {
-      const data = await api.get<DashboardResponse>('/dashboard')
+    queryFn: async (): Promise<DashboardData> => {
+      const response = await api.get<Partial<DashboardData>>('/dashboard')
+      const applicationDetailsAvailable = Array.isArray(response.applications)
+      const projectCountAvailable = typeof response.projectCount === 'number'
+      const applications = Array.isArray(response.applications) ? response.applications : []
+
       return {
-        ...data,
-        openIncidents: Array.isArray(data.openIncidents)
-          ? data.openIncidents.length
-          : data.openIncidents,
-      }
+        ...response,
+        generatedAt: response.generatedAt ?? new Date().toISOString(),
+        overall: response.overall ?? 'unknown',
+        components: response.components ?? {},
+        projectCount: response.projectCount ?? applications.length,
+        projectCountAvailable,
+        serverCount: response.serverCount ?? 0,
+        applications,
+        applicationDetailsAvailable,
+        openIncidents: Array.isArray(response.openIncidents) ? response.openIncidents : [],
+        recentActivity: Array.isArray(response.recentActivity) ? response.recentActivity : [],
+      } satisfies DashboardData
     },
     enabled,
     staleTime: 30_000,
@@ -395,7 +403,7 @@ export function useDeleteProject() {
 
 export function useConnectServer() {
   return useMutation({
-    mutationFn: (form: ConnectServerForm) => api.post('/servers/connect', form),
+    mutationFn: (form: ConnectServerForm) => api.post<{ server: Server }>('/servers/connect', form),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['servers'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })
@@ -406,7 +414,7 @@ export function useConnectServer() {
 
 export function useProvisionServer() {
   return useMutation({
-    mutationFn: (form: ProvisionServerForm) => api.post('/servers/provision', form),
+    mutationFn: (form: ProvisionServerForm) => api.post<{ server: Server }>('/servers/provision', form),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['servers'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })

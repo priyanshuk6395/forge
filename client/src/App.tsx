@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { Activity, ArrowLeft, ArrowRight, LayoutDashboard, FolderGit2, Server, History, Settings, Menu, LogOut, Sun, Moon, Plus, ExternalLink, RefreshCw, Trash2, Key, Zap, Loader2, AlertTriangle } from 'lucide-react'
+import { Activity, ArrowLeft, ArrowRight, LayoutDashboard, FolderGit2, Server, History, Settings, Menu, LogOut, Sun, Moon, Plus, ExternalLink, RefreshCw, Trash2, Key, Zap, Loader2, AlertTriangle, MoreHorizontal } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
@@ -51,22 +51,27 @@ import {
 } from '@/api/queries'
 import { ReleasesTab } from '@/components/ProjectDetail/ReleasesTab'
 import { timeAgo } from '@/lib/utils'
+import { StatusCenter } from '@/components/StatusCenter'
+import { ActivityTimeline, IncidentDetail, IncidentList, ServerHealthDetail } from '@/components/StatusDetails'
+import type { AuditEvent, DashboardData, Server as ServerRecord } from '@/api/types'
 
 const NAV_ITEMS = [
-  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'dashboard', label: 'Status', icon: LayoutDashboard },
   { id: 'projects', label: 'Projects', icon: FolderGit2 },
   { id: 'servers', label: 'Servers', icon: Server },
-  { id: 'audit', label: 'Audit log', icon: History },
+  { id: 'incidents', label: 'Incidents', icon: AlertTriangle },
+  { id: 'audit', label: 'Activity', icon: History },
   { id: 'settings', label: 'Settings', icon: Settings },
 ] as const
 
-type ViewId = typeof NAV_ITEMS[number]['id'] | 'project-detail'
+type ViewId = typeof NAV_ITEMS[number]['id'] | 'project-detail' | 'server-detail' | 'incident-detail'
 
-function HealthPill({ state }: { state: 'healthy' | 'attention' | 'critical' }) {
+function HealthPill({ state }: { state: 'healthy' | 'attention' | 'critical' | 'unknown' }) {
   const variants = {
     healthy: 'success' as const,
     attention: 'warning' as const,
     critical: 'danger' as const,
+    unknown: 'neutral' as const,
   }
   return <Badge variant={variants[state]}>{state.charAt(0).toUpperCase() + state.slice(1)}</Badge>
 }
@@ -91,6 +96,9 @@ export default function App() {
     return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
   })
   const [currentProjectId, setCurrentProjectId] = React.useState<string | null>(null)
+  const [currentProjectTab, setCurrentProjectTab] = React.useState<'releases' | 'logs'>('releases')
+  const [currentServerId, setCurrentServerId] = React.useState<string | null>(null)
+  const [currentIncidentId, setCurrentIncidentId] = React.useState<string | null>(null)
   const { toast } = useToast()
 
   const authStatus = useAuthStatus()
@@ -102,7 +110,8 @@ export default function App() {
   const { data: dashboard, isLoading: dashboardLoading } = dashboardQuery
   const { data: projects, isLoading: projectsLoading } = useProjects(isAuthenticated)
   const createProject = useCreateProject()
-  const { data: servers, isLoading: serversLoading } = useServers(isAuthenticated)
+  const serversQuery = useServers(isAuthenticated)
+  const { data: servers, isLoading: serversLoading } = serversQuery
   const connectServer = useConnectServer()
   const provisionServer = useProvisionServer()
   const testServer = useTestServer()
@@ -112,7 +121,8 @@ export default function App() {
   const disconnectGitHub = useDisconnectGitHub()
   const saveAWS = useSaveAWS()
   const testAWS = useTestAWS()
-  const { data: audit, isLoading: auditLoading } = useAudit(isAuthenticated)
+  const auditQuery = useAudit(isAuthenticated)
+  const { data: audit, isLoading: auditLoading } = auditQuery
 
   React.useEffect(() => {
     document.documentElement.classList.toggle('light', theme === 'light')
@@ -125,9 +135,22 @@ export default function App() {
     document.documentElement.classList.toggle('light', next === 'light')
   }
 
-  const openProject = (projectId: string) => {
+  const openProject = (projectId: string, tab: 'releases' | 'logs' = 'releases') => {
     setCurrentProjectId(projectId)
+    setCurrentProjectTab(tab)
     setCurrentView('project-detail')
+    setSidebarOpen(false)
+  }
+
+  const openServer = (serverId: string) => {
+    setCurrentServerId(serverId)
+    setCurrentView('server-detail')
+    setSidebarOpen(false)
+  }
+
+  const openIncident = (incidentId: string) => {
+    setCurrentIncidentId(incidentId)
+    setCurrentView('incident-detail')
     setSidebarOpen(false)
   }
 
@@ -135,6 +158,16 @@ export default function App() {
     setCurrentProjectId(null)
     setCurrentView('projects')
     setSidebarOpen(false)
+  }
+
+  const backToServers = () => {
+    setCurrentServerId(null)
+    setCurrentView('servers')
+  }
+
+  const backToIncidents = () => {
+    setCurrentIncidentId(null)
+    setCurrentView('incidents')
   }
 
   if (authStatus.isLoading) return <StartupScreen />
@@ -157,21 +190,32 @@ export default function App() {
 
   const renderView = () => {
     if (currentView === 'project-detail' && currentProjectId) {
-      return <ProjectDetailView projectId={currentProjectId} servers={servers ?? []} onBack={backToProjects} />
+      return <ProjectDetailView projectId={currentProjectId} servers={servers ?? []} initialTab={currentProjectTab} onBack={backToProjects} />
+    }
+    if (currentView === 'server-detail' && currentServerId) {
+      return <ServerHealthDetail server={servers?.find((server) => server.id === currentServerId)} applications={dashboard?.applications ?? []} activity={dashboard?.recentActivity ?? []} onBack={backToServers} onOpenProject={openProject} />
+    }
+    if (currentView === 'incident-detail' && currentIncidentId) {
+      const incident = dashboard?.openIncidents.find((item) => item.id === currentIncidentId)
+      const application = dashboard?.applications.find((item) => item.id === incident?.projectId)
+      const server = servers?.find((item) => item.id === application?.serverId)
+      return <IncidentDetail incident={incident} application={application} server={server} onBack={backToIncidents} onInvestigate={(projectId) => openProject(projectId)} onViewLogs={(projectId) => openProject(projectId, 'logs')} />
     }
     switch (currentView) {
       case 'dashboard':
-        return <DashboardView data={dashboard} isLoading={dashboardLoading} userName={authStatus.data?.user?.username ?? ''} onOpenProjects={() => setCurrentView('projects')} error={dashboardQuery.error} onRetry={() => dashboardQuery.refetch()} />
+        return <DashboardView data={dashboard} servers={servers ?? []} isLoading={dashboardLoading || serversLoading} isRefreshing={dashboardQuery.isFetching || serversQuery.isFetching} error={dashboardQuery.error ?? serversQuery.error} onRetry={() => { dashboardQuery.refetch(); serversQuery.refetch() }} onRefresh={() => { dashboardQuery.refetch(); serversQuery.refetch() }} onOpenServer={openServer} onOpenProject={openProject} onOpenIncident={openIncident} onOpenProjects={() => setCurrentView('projects')} onOpenServers={() => setCurrentView('servers')} onOpenActivity={() => setCurrentView('audit')} />
       case 'projects':
         return <ProjectsView projects={projects ?? []} isLoading={projectsLoading} createProject={createProject} onOpenProject={openProject} />
       case 'servers':
-        return <ServersView servers={servers ?? []} isLoading={serversLoading} connectServer={connectServer} provisionServer={provisionServer} testServer={testServer} deleteServer={deleteServer} />
+        return <ServersView servers={servers ?? []} isLoading={serversLoading} connectServer={connectServer} provisionServer={provisionServer} testServer={testServer} deleteServer={deleteServer} onOpenServer={openServer} />
+      case 'incidents':
+        return <IncidentList incidents={dashboard?.openIncidents ?? []} applications={dashboard?.applications ?? []} isLoading={dashboardLoading} error={dashboardQuery.error} onRetry={() => dashboardQuery.refetch()} onOpenIncident={openIncident} />
       case 'audit':
-        return <AuditView data={audit ?? []} isLoading={auditLoading} />
+        return <AuditView data={audit ?? []} isLoading={auditLoading} error={auditQuery.error} onRetry={() => auditQuery.refetch()} />
       case 'settings':
         return <SettingsView settings={settings} isLoading={settingsLoading} connectGitHub={connectGitHub} disconnectGitHub={disconnectGitHub} saveAWS={saveAWS} testAWS={testAWS} />
       default:
-        return <DashboardView data={dashboard} isLoading={dashboardLoading} userName={authStatus.data?.user?.username ?? ''} onOpenProjects={() => setCurrentView('projects')} error={dashboardQuery.error} onRetry={() => dashboardQuery.refetch()} />
+        return <DashboardView data={dashboard} servers={servers ?? []} isLoading={dashboardLoading || serversLoading} isRefreshing={dashboardQuery.isFetching || serversQuery.isFetching} error={dashboardQuery.error ?? serversQuery.error} onRetry={() => { dashboardQuery.refetch(); serversQuery.refetch() }} onRefresh={() => { dashboardQuery.refetch(); serversQuery.refetch() }} onOpenServer={openServer} onOpenProject={openProject} onOpenIncident={openIncident} onOpenProjects={() => setCurrentView('projects')} onOpenServers={() => setCurrentView('servers')} onOpenActivity={() => setCurrentView('audit')} />
     }
   }
 
@@ -193,11 +237,11 @@ export default function App() {
             <button
               key={item.id}
               onClick={() => { setCurrentView(item.id); setSidebarOpen(false); }}
-              aria-current={currentView === item.id || (currentView === 'project-detail' && item.id === 'projects') ? 'page' : undefined}
+              aria-current={currentView === item.id || (currentView === 'project-detail' && item.id === 'projects') || (currentView === 'server-detail' && item.id === 'servers') || (currentView === 'incident-detail' && item.id === 'incidents') ? 'page' : undefined}
               className={cn(
                 'nav-item flex items-center gap-2.5 px-2.5 py-2.5 rounded-[8px] text-sm text-[var(--color-text-secondary)]',
                 'hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-text)] transition-colors',
-                currentView === item.id && 'bg-[var(--color-surface-raised)] text-[var(--color-text)] font-semibold'
+                (currentView === item.id || (currentView === 'project-detail' && item.id === 'projects') || (currentView === 'server-detail' && item.id === 'servers') || (currentView === 'incident-detail' && item.id === 'incidents')) && 'bg-[var(--color-surface-raised)] text-[var(--color-text)] font-semibold'
               )}
             >
               <item.icon className="w-4 h-4 flex-shrink-0" />
@@ -246,7 +290,7 @@ export default function App() {
               <Menu className="w-5 h-5" />
             </button>
             <div className="breadcrumb text-sm text-[var(--color-text-secondary)]">
-              <strong className="text-[var(--color-text)] font-semibold">{currentView === 'project-detail' ? 'Projects / Detail' : NAV_ITEMS.find((item) => item.id === currentView)?.label ?? 'Dashboard'}</strong>
+              <strong className="text-[var(--color-text)] font-semibold">{currentView === 'project-detail' ? 'Projects / Detail' : currentView === 'server-detail' ? 'Servers / Health' : currentView === 'incident-detail' ? 'Incidents / Detail' : NAV_ITEMS.find((item) => item.id === currentView)?.label ?? 'Status'}</strong>
             </div>
           </div>
           <div className="topbar-actions flex items-center gap-2">
@@ -369,120 +413,37 @@ function AuthScreen({
   )
 }
 
-function DashboardView({ data, isLoading, userName, onOpenProjects, error, onRetry }: {
-  data: any
+function DashboardView({ data, servers, isLoading, isRefreshing, error, onRetry, onRefresh, onOpenServer, onOpenProject, onOpenIncident, onOpenProjects, onOpenServers, onOpenActivity }: {
+  data?: DashboardData
+  servers: ServerRecord[]
   isLoading: boolean
-  userName: string
-  onOpenProjects: () => void
+  isRefreshing: boolean
   error?: Error | null
   onRetry: () => void
+  onRefresh: () => void
+  onOpenServer: (serverId: string) => void
+  onOpenProject: (projectId: string) => void
+  onOpenIncident: (incidentId: string) => void
+  onOpenProjects: () => void
+  onOpenServers: () => void
+  onOpenActivity: () => void
 }) {
-  if (isLoading) {
-    return (
-      <div className="dashboard-view" aria-busy="true">
-        <header className="page-heading">
-          <div><p className="page-kicker">OPERATIONS / OVERVIEW</p><Skeleton className="h-8 w-40" /></div>
-        </header>
-        <Skeleton className="h-24 rounded-[var(--radius)]" />
-        <div className="dashboard-metrics">
-          {[1, 2, 3].map((index) => <Skeleton key={index} className="h-28 rounded-[var(--radius)]" />)}
-        </div>
-        <Skeleton className="mt-8 h-44" />
-      </div>
-    )
-  }
-
-  if (!data) {
-    return (
-      <div className="startup-error" role="alert">
-        <AlertTriangle aria-hidden="true" />
-        <h2>Overview unavailable</h2>
-        <p>{error?.message || 'Forge could not load the latest system status.'}</p>
-        <Button variant="subtle" onClick={onRetry}>Retry</Button>
-      </div>
-    )
-  }
-
-  const statusLabel = data.overall === 'healthy'
-    ? 'Systems nominal'
-    : data.overall === 'attention'
-      ? 'Needs attention'
-      : 'Critical issue'
-  const openIncidentCount = data.openIncidents?.length ?? 0
-  const statusDescription = openIncidentCount > 0
-    ? `${openIncidentCount} open incident${openIncidentCount === 1 ? '' : 's'} require review.`
-    : data.projectCount === 0
-      ? 'Control plane ready. Add a project to begin.'
-      : 'No active incidents. Your latest checks are clear.'
-  const components = Object.entries(data.components || {}) as [string, string][]
-  const metrics = [
-    { label: 'Projects', value: data.projectCount, detail: 'Tracked applications', icon: FolderGit2 },
-    { label: 'Servers', value: data.serverCount, detail: 'Connected environments', icon: Server },
-    { label: 'Open incidents', value: openIncidentCount, detail: openIncidentCount ? 'Requires review' : 'No action required', icon: AlertTriangle },
-  ]
-
   return (
-    <div className="dashboard-view">
-      <header className="page-heading">
-        <div>
-          <p className="page-kicker">OPERATIONS / OVERVIEW</p>
-          <h1 className="page-title">Overview</h1>
-          <p className="page-description">Workspace for {userName}</p>
-        </div>
-        <Button onClick={onOpenProjects}><Plus className="w-4 h-4" /> New project</Button>
-      </header>
-
-      <section className={cn('system-banner', `state-${data.overall}`)} aria-live="polite">
-        <div className="system-state-icon"><Activity className="w-5 h-5" aria-hidden="true" /></div>
-        <div>
-          <p className="section-kicker">PLATFORM STATUS</p>
-          <h2>{statusLabel}</h2>
-          <p>{statusDescription}</p>
-        </div>
-        <div className="component-status-list">
-          {components.map(([name, state]) => (
-            <span className="component-status" data-state={state} key={name}>{name}</span>
-          ))}
-        </div>
-      </section>
-
-      <section aria-labelledby="environment-heading">
-        <div className="section-heading">
-          <h2 id="environment-heading">Environment</h2>
-          <p>Live inventory</p>
-        </div>
-        <div className="dashboard-metrics">
-          {metrics.map(({ label, value, detail, icon: Icon }) => (
-            <div className="dashboard-metric" key={label}>
-              <div className="metric-topline"><Icon aria-hidden="true" /><span>{detail}</span></div>
-              <strong className="metric-value">{String(value ?? 0).padStart(2, '0')}</strong>
-              <span className="metric-label">{label}</span>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="activity-section" aria-labelledby="activity-heading">
-        <div className="section-heading">
-          <h2 id="activity-heading">Recent activity</h2>
-          <p>Latest control-plane events</p>
-        </div>
-        {data.recentActivity?.length ? (
-          <>
-            <div className="activity-row activity-header"><span>ACTOR</span><span>EVENT</span><span>WHEN</span></div>
-            {data.recentActivity.map((entry: any, index: number) => (
-              <div className="activity-row" key={`${entry.ts}-${index}`}>
-                <span className="activity-actor">{entry.actor}</span>
-                <span className="activity-action">{entry.action.replace(/\./g, ' / ')}</span>
-                <span className="activity-time">{timeAgo(entry.ts)}</span>
-              </div>
-            ))}
-          </>
-        ) : (
-          <p className="activity-empty">No activity recorded yet.</p>
-        )}
-      </section>
-    </div>
+    <StatusCenter
+      data={data}
+      servers={servers}
+      isLoading={isLoading}
+      isRefreshing={isRefreshing}
+      error={error}
+      onRetry={onRetry}
+      onRefresh={onRefresh}
+      onOpenServer={onOpenServer}
+      onOpenProject={onOpenProject}
+      onOpenIncident={onOpenIncident}
+      onOpenProjects={onOpenProjects}
+      onOpenServers={onOpenServers}
+      onOpenActivity={onOpenActivity}
+    />
   )
 }
 
@@ -527,6 +488,8 @@ function ProjectsView({ projects, isLoading, createProject, onOpenProject }: { p
         if (repo.defaultBranch) {
           setFormData(prev => ({ ...prev, branch: repo.defaultBranch }))
         }
+      } catch (error) {
+        toast(error instanceof Error ? error.message : 'Could not load repository branches.', 'error')
       } finally {
         setLoadingBranches(false)
       }
@@ -543,6 +506,8 @@ function ProjectsView({ projects, isLoading, createProject, onOpenProject }: { p
         const [owner, repoName] = selectedRepo.fullName.split('/')
         const detect = await fetchGitHubDetect(owner, repoName, branch)
         setDetect(detect)
+      } catch (error) {
+        toast(error instanceof Error ? error.message : 'Could not inspect the selected branch.', 'error')
       } finally {
         setLoadingDetect(false)
       }
@@ -558,6 +523,9 @@ function ProjectsView({ projects, isLoading, createProject, onOpenProject }: { p
     try {
       const repos = await fetchGitHubRepos()
       setRepos(repos)
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Could not load GitHub repositories.', 'error')
+      return
     } finally {
       setLoadingRepos(false)
     }
@@ -726,8 +694,8 @@ function ProjectsView({ projects, isLoading, createProject, onOpenProject }: { p
   )
 }
  
-function ProjectDetailView({ projectId, servers, onBack }: { projectId: string; servers: any[]; onBack: () => void }) {
-  const [currentTab, setCurrentTab] = React.useState<'releases' | 'logs' | 'secrets' | 'settings'>('releases')
+function ProjectDetailView({ projectId, servers, initialTab, onBack }: { projectId: string; servers: any[]; initialTab: 'releases' | 'logs'; onBack: () => void }) {
+  const [currentTab, setCurrentTab] = React.useState<'releases' | 'logs' | 'secrets' | 'settings'>(initialTab)
   const { toast } = useToast()
   
   const { data: projectData, isLoading } = useProjectDetail(projectId)
@@ -744,7 +712,7 @@ function ProjectDetailView({ projectId, servers, onBack }: { projectId: string; 
   const handleDeploy = async () => {
     try {
       await deployMutation.mutateAsync()
-      toast('Deployment started', 'success')
+      toast('Deployment queued. Progress is in Releases.', 'success')
     } catch (err: any) {
       toast(err.message, 'error')
     }
@@ -800,8 +768,10 @@ function ProjectDetailView({ projectId, servers, onBack }: { projectId: string; 
       await deleteMutation.mutateAsync(projectId)
       toast('Project deleted', 'success')
       onBack()
+      return true
     } catch (err: any) {
       toast(err.message, 'error')
+      return false
     }
   }
   
@@ -948,6 +918,7 @@ function SecretsTab({ secrets, isLoading, onAdd, onRemove }: any) {
 }
  
 function SettingsTab({ project, servers, onUpdate, onDelete, onToggleAutoDeploy, autoDeploy }: any) {
+  const [confirmDelete, setConfirmDelete] = React.useState(false)
   const [formData, setFormData] = React.useState({
     branch: project.branch,
     serverId: project.serverId || '',
@@ -958,6 +929,7 @@ function SettingsTab({ project, servers, onUpdate, onDelete, onToggleAutoDeploy,
   })
  
   return (
+    <>
     <Card>
       <form onSubmit={e => { e.preventDefault(); onUpdate(formData); }} className="space-y-4">
         <div className="grid grid-cols-2 gap-4">
@@ -1011,31 +983,149 @@ function SettingsTab({ project, servers, onUpdate, onDelete, onToggleAutoDeploy,
       <hr className="border-[var(--color-border)] my-4" />
  
       <div className="text-red-400">
-        <Button variant="danger" onClick={onDelete}>Delete project</Button>
+        <Button variant="danger" onClick={() => setConfirmDelete(true)}>Delete project</Button>
         <p className="text-xs text-[var(--color-text-muted)] mt-2">
           This removes the project from Forge and its release history. The running container on the server is left as-is — stop it manually if needed.
         </p>
       </div>
     </Card>
+    <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Delete {project.name} from Forge?</DialogTitle></DialogHeader>
+        <DialogDescription>
+          This permanently removes the project configuration and release history from Forge. Its running container and data on {servers.find((server: any) => server.id === project.serverId)?.name || 'the server'} will remain unchanged.
+        </DialogDescription>
+        <div className="dialog-actions">
+          <Button variant="ghost" onClick={() => setConfirmDelete(false)}>Cancel</Button>
+          <Button variant="danger" onClick={async () => { if (await onDelete()) setConfirmDelete(false) }}>Delete project</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+    </>
   )
 }
  
-function ServersView({ servers, isLoading, connectServer, provisionServer, testServer, deleteServer }: any) {
+function ServersView({ servers, isLoading, connectServer, provisionServer, testServer, deleteServer, onOpenServer }: any) {
   const { toast } = useToast()
   const [connectModal, setConnectModal] = React.useState(false)
   const [provisionModal, setProvisionModal] = React.useState(false)
-  const [connectForm, setConnectForm] = React.useState({ name: '', host: '', sshUser: 'ubuntu', sshPort: 22, privateKey: '' })
+  const [connectForm, setConnectForm] = React.useState({ name: '', host: '', sshUser: 'ubuntu', sshPort: 22, privateKey: '', keyPassphrase: '' })
+  const [connectError, setConnectError] = React.useState('')
+  const [privateKeyFileName, setPrivateKeyFileName] = React.useState('')
+  const [privateKeyError, setPrivateKeyError] = React.useState('')
   const [provisionForm, setProvisionForm] = React.useState({ name: '', instanceType: 't3.micro', sshCidr: '0.0.0.0/0' })
+  const [provisionError, setProvisionError] = React.useState('')
+  const [serverFeedback, setServerFeedback] = React.useState<Record<string, { tone: 'pending' | 'success' | 'error'; message: string }>>({})
+  const [removeServer, setRemoveServer] = React.useState<any>(null)
+
+  const handlePrivateKeyFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    setConnectForm((current) => ({ ...current, privateKey: '' }))
+    setPrivateKeyFileName('')
+    setPrivateKeyError('')
+    if (file.size > 64 * 1024) {
+      setPrivateKeyError('Choose a private key file smaller than 64 KB.')
+      event.target.value = ''
+      return
+    }
+    const contents = await file.text()
+    if (!/-----BEGIN (?:OPENSSH |RSA |EC |DSA |ENCRYPTED )?PRIVATE KEY-----/.test(contents)) {
+      setPrivateKeyError('This file does not look like a PEM or OpenSSH private key.')
+      event.target.value = ''
+      return
+    }
+    setConnectForm((current) => ({ ...current, privateKey: contents }))
+    setPrivateKeyFileName(file.name)
+    setPrivateKeyError('')
+  }
+
+  const handleConnectServer = async () => {
+    setConnectError('')
+    try {
+      const result = await connectServer.mutateAsync(connectForm)
+      setConnectModal(false)
+      setConnectForm({ name: '', host: '', sshUser: 'ubuntu', sshPort: 22, privateKey: '', keyPassphrase: '' })
+      setPrivateKeyFileName('')
+      toast(result.server.status === 'ready' ? 'Server connected and prepared' : 'Server connected', 'success')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not connect to the server.'
+      setConnectError(message)
+      toast(message, 'error')
+    }
+  }
+
+  const handleProvisionServer = async () => {
+    setProvisionError('')
+    try {
+      const { server } = await provisionServer.mutateAsync(provisionForm)
+      setProvisionModal(false)
+      setProvisionForm({ name: '', instanceType: 't3.micro', sshCidr: '0.0.0.0/0' })
+      if (server.status === 'ready') {
+        toast('EC2 server is ready for deployments.', 'success')
+      } else {
+        const message = server.statusError || 'The instance was created but server setup did not finish.'
+        toast(`EC2 server created, but setup failed: ${message}`, 'error')
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not provision an EC2 server.'
+      setProvisionError(message)
+      toast(message, 'error')
+    }
+  }
+
+  const handleTestServer = async (server: any) => {
+    setServerFeedback((current) => ({ ...current, [server.id]: { tone: 'pending', message: 'Testing SSH connection…' } }))
+    try {
+      const result = await testServer.mutateAsync(server.id)
+      if (!result.ok) throw new Error(result.error || 'SSH connection test failed.')
+      setServerFeedback((current) => ({ ...current, [server.id]: { tone: 'success', message: 'SSH connection verified.' } }))
+      toast('SSH connection verified.', 'success')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'SSH connection test failed.'
+      setServerFeedback((current) => ({ ...current, [server.id]: { tone: 'error', message } }))
+      toast(message, 'error')
+    }
+  }
+
+  const handleDeleteServer = async (server: any) => {
+    setServerFeedback((current) => ({ ...current, [server.id]: { tone: 'pending', message: 'Removing server from Forge…' } }))
+    try {
+      await deleteServer.mutateAsync(server.id)
+      const message = server.provider === 'ec2'
+        ? 'Server removed from Forge. Its EC2 instance was not terminated.'
+        : 'Server removed from Forge.'
+      setRemoveServer(null)
+      toast(message, 'success')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not remove this server.'
+      setServerFeedback((current) => ({ ...current, [server.id]: { tone: 'error', message } }))
+      toast(message, 'error')
+    }
+  }
+
+  const requestServerRemoval = (server: any) => {
+    setServerFeedback((current) => {
+      const next = { ...current }
+      delete next[server.id]
+      return next
+    })
+    setRemoveServer(server)
+  }
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-semibold">Servers</h2>
+      <header className="page-heading server-list-heading">
+        <div>
+          <p className="page-kicker">INFRASTRUCTURE</p>
+          <h1 className="page-title">Servers</h1>
+          <p className="page-description">Connection state and deployment targets.</p>
+        </div>
         <div className="inline-row gap-2">
           <Button variant="subtle" onClick={() => setConnectModal(true)}><Key className="w-4 h-4 mr-1" /> Connect existing</Button>
           <Button onClick={() => setProvisionModal(true)}><Zap className="w-4 h-4 mr-1" /> Provision on AWS</Button>
         </div>
-      </div>
+      </header>
 
       {isLoading ? (
         <Card><Skeleton className="h-24" /></Card>
@@ -1051,71 +1141,158 @@ function ServersView({ servers, isLoading, connectServer, provisionServer, testS
           </div>
         </Card>
       ) : (
-        <Card>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Host</TableHead>
-                <TableHead>Provider</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="w-48">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {servers?.map((s: any) => (
-                <TableRow key={s.id}>
-                  <TableCell className="font-medium">{s.name}</TableCell>
-                  <TableCell className="text-sm text-[var(--color-text-muted)] font-mono">{s.host}</TableCell>
-                  <TableCell>{s.provider === 'ec2' ? 'AWS EC2' : 'Existing'}</TableCell>
-                  <TableCell><ServerStatusPill status={s.status} /></TableCell>
-                  <TableCell>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="sm"><AlertTriangle className="w-4 h-4" /></Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={() => { testServer.mutate(s.id); toast('SSH test started') }}>
-                          <ExternalLink className="w-4 h-4 mr-2" /> Test SSH
-                        </DropdownMenuItem>
-                        {s.hasKey && (
-                          <DropdownMenuItem onClick={() => window.open(`/api/servers/${s.id}/key`, '_blank')}>
-                            <Key className="w-4 h-4 mr-2" /> Download key
-                          </DropdownMenuItem>
-                        )}
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={() => { deleteServer.mutate(s.id); toast('Server deleted') }} className="text-red-400">
-                          <Trash2 className="w-4 h-4 mr-2" /> Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </TableCell>
+        <>
+          <Card className="server-table-view">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Host</TableHead>
+                  <TableHead>Provider</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="w-48">Actions</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Card>
+              </TableHeader>
+              <TableBody>
+                {servers?.map((s: any) => (
+                  <TableRow key={s.id}>
+                    <TableCell className="font-medium">{s.name}</TableCell>
+                    <TableCell className="text-sm text-[var(--color-text-muted)] font-mono">{s.host}</TableCell>
+                    <TableCell>{s.provider === 'ec2' ? 'AWS EC2' : 'Existing'}</TableCell>
+                    <TableCell>
+                      <div className="server-status-summary">
+                        <ServerStatusPill status={s.status} />
+                        {s.statusError && <p className="server-status-error" role="alert">{s.statusError}</p>}
+                        {serverFeedback[s.id] && <p className={`server-operation-note tone-${serverFeedback[s.id].tone}`} role={serverFeedback[s.id].tone === 'error' ? 'alert' : 'status'} aria-live="polite">
+                          {serverFeedback[s.id].tone === 'pending' && <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />}
+                          {serverFeedback[s.id].message}
+                        </p>}
+                        {s.provider === 'ec2' && s.instanceId && <span className="server-instance-id">{s.region} · {s.instanceId}</span>}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="server-table-actions">
+                        <Button variant="ghost" size="sm" onClick={() => onOpenServer(s.id)}>Health</Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="sm" aria-label={`Actions for ${s.name}`} title="Server actions">
+                              <MoreHorizontal className="w-4 h-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => handleTestServer(s)}><ExternalLink className="w-4 h-4 mr-2" /> Test SSH</DropdownMenuItem>
+                            {s.hasKey && <DropdownMenuItem onClick={() => window.open(`/api/servers/${s.id}/key`, '_blank')}><Key className="w-4 h-4 mr-2" /> Download key</DropdownMenuItem>}
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem onClick={() => requestServerRemoval(s)} className="text-red-400"><Trash2 className="w-4 h-4 mr-2" /> Remove from Forge</DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Card>
+          <div className="server-responsive-cards">
+            {servers?.map((s: any) => (
+              <article className="server-list-card" key={s.id}>
+                <div className="server-list-card-heading">
+                  <div><strong>{s.name}</strong><code>{s.host}</code></div>
+                  <ServerStatusPill status={s.status} />
+                </div>
+                <p className="server-list-provider">{s.provider === 'ec2' ? `AWS EC2${s.region ? ` · ${s.region}` : ''}` : 'Existing host'}</p>
+                {s.statusError && <p className="server-status-error" role="alert">{s.statusError}</p>}
+                {serverFeedback[s.id] && <p className={`server-operation-note tone-${serverFeedback[s.id].tone}`} role={serverFeedback[s.id].tone === 'error' ? 'alert' : 'status'} aria-live="polite">
+                  {serverFeedback[s.id].tone === 'pending' && <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />}
+                  {serverFeedback[s.id].message}
+                </p>}
+                {s.provider === 'ec2' && s.instanceId && <span className="server-instance-id">{s.region} · {s.instanceId}</span>}
+                <div className="server-list-card-actions">
+                  <Button variant="subtle" size="sm" onClick={() => onOpenServer(s.id)}>Health details</Button>
+                  <Button variant="ghost" size="sm" onClick={() => handleTestServer(s)}><ExternalLink aria-hidden="true" /> Test SSH</Button>
+                  {s.hasKey && <Button variant="ghost" size="sm" onClick={() => window.open(`/api/servers/${s.id}/key`, '_blank')}><Key aria-hidden="true" /> Key</Button>}
+                  <Button variant="danger" size="sm" onClick={() => requestServerRemoval(s)}><Trash2 aria-hidden="true" /> Remove</Button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </>
       )}
 
+      <Dialog open={Boolean(removeServer)} onOpenChange={(open) => { if (!open && !deleteServer.isPending) setRemoveServer(null) }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Remove {removeServer?.name} from Forge?</DialogTitle></DialogHeader>
+          <DialogDescription>
+            This removes Forge's saved connection only. The host will not be stopped or terminated{removeServer?.provider === 'ec2' ? ', and its EC2 instance will keep running' : ''}. Move any applications assigned to this server before removing it.
+          </DialogDescription>
+          {removeServer && serverFeedback[removeServer.id]?.tone === 'pending' && <p role="status" aria-live="polite">Removing server from Forge…</p>}
+          {removeServer && serverFeedback[removeServer.id]?.tone === 'error' && <p className="form-error" role="alert">{serverFeedback[removeServer.id].message}</p>}
+          <div className="dialog-actions">
+            <Button variant="ghost" onClick={() => setRemoveServer(null)} disabled={deleteServer.isPending}>Cancel</Button>
+            <Button variant="danger" onClick={() => removeServer && handleDeleteServer(removeServer)} disabled={deleteServer.isPending}>
+              {deleteServer.isPending && <Loader2 className="animate-spin" aria-hidden="true" />}
+              {deleteServer.isPending ? 'Removing…' : 'Remove server'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Connect Modal */}
-      <Dialog open={connectModal} onOpenChange={setConnectModal}>
+      <Dialog
+        open={connectModal}
+        onOpenChange={(open) => {
+          if (connectServer.isPending) return
+          setConnectModal(open)
+          if (open) {
+            setConnectError('')
+            setPrivateKeyError('')
+          }
+        }}
+      >
         <DialogContent wide>
           <DialogHeader>
             <DialogTitle>Connect an existing server</DialogTitle>
-            <DialogDescription>Any Linux box you can already SSH into — an EC2 instance you launched yourself, or anything else.</DialogDescription>
+            <DialogDescription>Debian or Ubuntu with systemd and root or passwordless sudo. Forge checks the host and installs missing deployment tools.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <Input label="Name" placeholder="staging-box" value={connectForm.name} onChange={e => setConnectForm(prev => ({ ...prev, name: e.target.value }))} required />
+            <Input label="Name" name="serverName" placeholder="staging-box" value={connectForm.name} onChange={e => setConnectForm(prev => ({ ...prev, name: e.target.value }))} required disabled={connectServer.isPending} />
             <div className="grid grid-cols-2 gap-4">
-              <Input label="Host / IP" placeholder="3.110.221.4" value={connectForm.host} onChange={e => setConnectForm(prev => ({ ...prev, host: e.target.value }))} required />
-              <Input type="number" label="SSH port" value={connectForm.sshPort} onChange={e => setConnectForm(prev => ({ ...prev, sshPort: Number(e.target.value) }))} />
+              <Input label="Host / IP" name="serverHost" placeholder="3.110.221.4" value={connectForm.host} onChange={e => setConnectForm(prev => ({ ...prev, host: e.target.value }))} required disabled={connectServer.isPending} />
+              <Input type="number" label="SSH port" name="serverSshPort" value={connectForm.sshPort} onChange={e => setConnectForm(prev => ({ ...prev, sshPort: Number(e.target.value) }))} disabled={connectServer.isPending} />
             </div>
-            <Input label="SSH user" value={connectForm.sshUser} onChange={e => setConnectForm(prev => ({ ...prev, sshUser: e.target.value }))} />
-            <Textarea label="Private key (PEM)" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" value={connectForm.privateKey} onChange={e => setConnectForm(prev => ({ ...prev, privateKey: e.target.value }))} rows={6} required />
+            <Input label="SSH user" name="serverSshUser" value={connectForm.sshUser} onChange={e => setConnectForm(prev => ({ ...prev, sshUser: e.target.value }))} disabled={connectServer.isPending} />
+            <div className="space-y-2">
+              <Label htmlFor="privateKeyFile">Upload private key</Label>
+              <input
+                id="privateKeyFile"
+                className="pem-file-input"
+                type="file"
+                accept=".pem,.key,application/x-pem-file"
+                aria-label="Upload private key PEM file"
+                onChange={handlePrivateKeyFile}
+                disabled={connectServer.isPending}
+              />
+              <p className="field-note" aria-live="polite">
+                {privateKeyFileName ? `Selected ${privateKeyFileName}` : 'PEM or OpenSSH private key, up to 64 KB.'}
+              </p>
+              {privateKeyError && <p className="form-error" role="alert">{privateKeyError}</p>}
+            </div>
+            <Textarea label="Private key (PEM)" name="privateKey" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" value={connectForm.privateKey} onChange={e => { const privateKey = e.target.value; setConnectForm(prev => ({ ...prev, privateKey })); setPrivateKeyError(''); setPrivateKeyFileName('') }} rows={6} required disabled={connectServer.isPending} />
+            <Input label="Key passphrase (if required)" name="keyPassphrase" type="password" autoComplete="new-password" value={connectForm.keyPassphrase} onChange={e => setConnectForm(prev => ({ ...prev, keyPassphrase: e.target.value }))} disabled={connectServer.isPending} />
+            {connectServer.isPending && (
+              <div className="operation-feedback" role="status" aria-live="polite">
+                <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                <div>
+                  <strong>Testing SSH and preparing server</strong>
+                  <p>Forge checks the host, installs missing deployment tools, then verifies them again. This may take a few minutes.</p>
+                </div>
+              </div>
+            )}
+            {connectError && <p className="form-error" role="alert">{connectError}</p>}
             <div className="flex justify-end gap-2 pt-4">
-              <Button variant="ghost" onClick={() => setConnectModal(false)}>Cancel</Button>
-              <Button onClick={() => { connectServer.mutate(connectForm); setConnectModal(false); toast('Server connected and prepared', 'success') }} disabled={connectServer.isPending}>
-                {connectServer.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null} Connect
+              <Button variant="ghost" onClick={() => setConnectModal(false)} disabled={connectServer.isPending}>Cancel</Button>
+              <Button onClick={handleConnectServer} disabled={connectServer.isPending || !connectForm.name || !connectForm.host || !connectForm.privateKey}>
+                {connectServer.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}{connectServer.isPending ? 'Connecting…' : 'Connect'}
               </Button>
             </div>
           </div>
@@ -1123,15 +1300,22 @@ function ServersView({ servers, isLoading, connectServer, provisionServer, testS
       </Dialog>
 
       {/* Provision Modal */}
-      <Dialog open={provisionModal} onOpenChange={setProvisionModal}>
+      <Dialog
+        open={provisionModal}
+        onOpenChange={(open) => {
+          if (provisionServer.isPending) return
+          setProvisionModal(open)
+          if (open) setProvisionError('')
+        }}
+      >
         <DialogContent wide>
           <DialogHeader>
             <DialogTitle>Provision a new EC2 instance</DialogTitle>
             <DialogDescription>Using the AWS credentials saved in Settings (or instance profile).</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <Input label="Name" placeholder="production" value={provisionForm.name} onChange={e => setProvisionForm(prev => ({ ...prev, name: e.target.value }))} required />
-            <Select label="Instance type" value={provisionForm.instanceType} onChange={e => setProvisionForm(prev => ({ ...prev, instanceType: e.target.value }))}>
+            <Input label="Name" name="provisionName" placeholder="production" value={provisionForm.name} onChange={e => setProvisionForm(prev => ({ ...prev, name: e.target.value }))} required disabled={provisionServer.isPending} />
+            <Select label="Instance type" value={provisionForm.instanceType} onChange={e => setProvisionForm(prev => ({ ...prev, instanceType: e.target.value }))} disabled={provisionServer.isPending}>
               <option value="t3.micro">t3.micro</option>
               <option value="t3.small">t3.small</option>
               <option value="t3.medium">t3.medium</option>
@@ -1139,13 +1323,23 @@ function ServersView({ servers, isLoading, connectServer, provisionServer, testS
             </Select>
             <div className="space-y-2">
               <Label>Allow SSH from (CIDR)</Label>
-              <Input value={provisionForm.sshCidr} onChange={e => setProvisionForm(prev => ({ ...prev, sshCidr: e.target.value }))} placeholder="0.0.0.0/0" />
+              <Input name="sshCidr" value={provisionForm.sshCidr} onChange={e => setProvisionForm(prev => ({ ...prev, sshCidr: e.target.value }))} placeholder="0.0.0.0/0" disabled={provisionServer.isPending} />
               <p className="text-xs text-[var(--color-text-muted)]">Use your own IP/32 to lock this down; 0.0.0.0/0 allows SSH from anywhere.</p>
             </div>
+            {provisionServer.isPending && (
+              <div className="operation-feedback" role="status" aria-live="polite">
+                <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                <div>
+                  <strong>Launching EC2 and preparing server</strong>
+                  <p>Forge is waiting for AWS and the bootstrap check. This may take a few minutes.</p>
+                </div>
+              </div>
+            )}
+            {provisionError && <p className="form-error" role="alert">{provisionError}</p>}
             <div className="flex justify-end gap-2 pt-4">
-              <Button variant="ghost" onClick={() => setProvisionModal(false)}>Cancel</Button>
-              <Button onClick={() => { provisionServer.mutate(provisionForm); setProvisionModal(false); toast('Server provisioning started', 'success') }} disabled={provisionServer.isPending}>
-                {provisionServer.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null} Provision
+              <Button variant="ghost" onClick={() => setProvisionModal(false)} disabled={provisionServer.isPending}>Cancel</Button>
+              <Button onClick={handleProvisionServer} disabled={provisionServer.isPending || !provisionForm.name}>
+                {provisionServer.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}{provisionServer.isPending ? 'Provisioning…' : 'Provision'}
               </Button>
             </div>
           </div>
@@ -1293,44 +1487,6 @@ function SettingsView({ settings, isLoading, connectGitHub, disconnectGitHub, sa
   )
 }
 
-function AuditView({ data, isLoading }: { data: any[]; isLoading: boolean }) {
-  if (isLoading) return <Card><Skeleton className="h-40" /></Card>
-
-  return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <h2 className="text-base font-semibold">Audit log</h2>
-        </CardHeader>
-        <div className="table-wrap">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>When</TableHead>
-                <TableHead>Actor</TableHead>
-                <TableHead>Action</TableHead>
-                <TableHead>Result</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {data?.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={4} className="text-center py-8 text-[var(--color-text-secondary)]">No activity recorded yet.</TableCell>
-                </TableRow>
-              ) : (
-                data?.map((ev: any, i: number) => (
-                  <TableRow key={i}>
-                    <TableCell className="text-[var(--color-text-muted)] text-sm">{timeAgo(ev.ts)}</TableCell>
-                    <TableCell className="font-medium">{ev.actor}</TableCell>
-                    <TableCell><code className="text-sm font-mono text-[var(--color-text)]">{ev.action}</code></TableCell>
-                    <TableCell><Badge variant={ev.result === 'success' ? 'success' : 'danger'}>{ev.result}</Badge></TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </Card>
-    </div>
-  )
+function AuditView({ data, isLoading, error, onRetry }: { data: AuditEvent[]; isLoading: boolean; error?: Error | null; onRetry: () => void }) {
+  return <ActivityTimeline events={data} isLoading={isLoading} error={error} onRetry={onRetry} />
 }
