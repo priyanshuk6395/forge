@@ -93,24 +93,43 @@ async function mockDashboard(page: Page, body: ReturnType<typeof emptyDashboard>
 
 test('partial status stays neutral and server health displays live telemetry', async ({ page }) => {
   await mockDashboard(page, emptyDashboard())
+  const agentTelemetry = {
+    checkedAt: '2026-10-05T00:00:00Z',
+    checkedEpoch: 1791158400,
+    collector: 'agent',
+    cpuPercent: 23.5,
+    cpuCores: 2,
+    loadAverage: { one: 0.25, five: 0.2, fifteen: 0.15 },
+    uptimeSeconds: 3600,
+    platform: 'Ubuntu 24.04 LTS',
+    memory: { usedBytes: 5000000000, totalBytes: 10000000000, percent: 50 },
+    disk: { usedBytes: 12000000000, totalBytes: 100000000000, percent: 12 },
+    network: {
+      receivedBytes: 1048576,
+      sentBytes: 2097152,
+      interfaces: 1,
+      receivedBytesPerSecond: 4096,
+      sentBytesPerSecond: 1024,
+    },
+    tls: { state: 'valid', expiresAt: '2027-10-05T00:00:00.000Z' },
+  }
   await page.route('**/api/servers/srv_e2e/telemetry', (route) => route.fulfill({
+    json: { telemetry: { ...agentTelemetry, collector: 'ssh' } },
+  }))
+  await page.route('**/api/servers/srv_e2e/agent/install', (route) => route.fulfill({
     json: {
-      telemetry: {
-        checkedAt: '2026-10-05T00:00:00Z',
-        collector: 'ssh',
-        cpuPercent: 23.5,
-        memory: { usedBytes: 5000000000, totalBytes: 10000000000, percent: 50 },
-        disk: { usedBytes: 12000000000, totalBytes: 100000000000, percent: 12 },
-        network: { receivedBytes: 1048576, sentBytes: 2097152 },
-        tls: { state: 'valid', expiresAt: '2027-10-05T00:00:00.000Z' },
+      server: {
+        id: 'srv_e2e',
+        agent: { state: 'ready', installedAt: '2026-10-05T00:00:00Z', lastSeenAt: agentTelemetry.checkedAt },
       },
+      telemetry: agentTelemetry,
     },
   }))
   await signIn(page)
 
   await expect(page.getByRole('heading', { name: 'Status is partially known' })).toBeVisible()
   await expect(page.getByText('Connect an application to begin health checks.')).toBeVisible()
-  await expect(page.getByText('No current signal is available in this overview. Host readings are sampled on demand in server details.')).toBeVisible()
+  await expect(page.getByText('Signals use recent host telemetry. Install an agent in server details for scheduled reports.')).toBeVisible()
 
   await page.getByRole('button', { name: 'Open health details for E2E Server' }).click()
   await expect(page.getByRole('heading', { name: 'E2E Server', exact: true })).toBeVisible()
@@ -125,7 +144,14 @@ test('partial status stays neutral and server health displays live telemetry', a
   await expect(page.locator('.telemetry-fact').filter({ hasText: 'Network' })).toContainText('Rx 1.0 MiB · Tx 2.0 MiB')
   await expect(page.locator('.telemetry-fact').filter({ hasText: 'SSL / TLS' })).toContainText('Valid · 2027-10-05')
   await expect(page.locator('.telemetry-fact').filter({ hasText: 'Collector' })).toContainText('Agentless SSH')
-  await expect(page.getByText(/Network totals are cumulative since boot/)).toBeVisible()
+  await expect(page.getByText(/Network totals are since boot/)).toBeVisible()
+  await expect(page.locator('.detail-fact').filter({ hasText: 'Load average' })).toContainText('0.25 / 0.20 / 0.15')
+  await expect(page.locator('.detail-fact').filter({ hasText: 'Uptime' })).toContainText('1h')
+  await expect(page.getByRole('button', { name: 'Install telemetry agent' })).toBeEnabled()
+  await page.getByRole('button', { name: 'Install telemetry agent' }).click()
+  await expect(page.getByRole('button', { name: 'Agent installed' })).toBeDisabled()
+  await expect(page.locator('.telemetry-fact').filter({ hasText: 'Collector' })).toContainText('Agent online')
+  await expect(page.locator('.detail-fact').filter({ hasText: 'Receive rate' })).toContainText('4.0 KiB/s')
 
   await page.getByRole('button', { name: 'Remove from Forge' }).click()
   const dialog = page.getByRole('dialog')
@@ -146,6 +172,34 @@ test('server health explains when live SSH telemetry cannot be collected', async
   await expect(telemetry.getByText('SSH unavailable').first()).toBeVisible()
   await expect(telemetry.locator('.telemetry-fact').filter({ hasText: 'Collector' })).toContainText('SSH unavailable')
   await expect(page.getByText(/Live telemetry could not be collected over SSH: SSH connection refused/)).toBeVisible()
+})
+
+test('server health identifies an untrusted TLS certificate', async ({ page }) => {
+  await mockDashboard(page, emptyDashboard())
+  await page.route('**/api/servers/srv_e2e/telemetry', (route) => route.fulfill({
+    json: {
+      telemetry: {
+        checkedAt: now,
+        checkedEpoch: Math.floor(Date.now() / 1000),
+        collector: 'agent',
+        cpuPercent: 8,
+        cpuCores: 2,
+        loadAverage: { one: 0.1, five: 0.2, fifteen: 0.3 },
+        uptimeSeconds: 5400,
+        platform: 'Ubuntu 24.04 LTS',
+        memory: { usedBytes: 20, totalBytes: 100, percent: 20 },
+        disk: { usedBytes: 30, totalBytes: 100, percent: 30 },
+        network: { receivedBytes: 10, sentBytes: 20, interfaces: 1, receivedBytesPerSecond: 0, sentBytesPerSecond: 0 },
+        tls: { state: 'untrusted', expiresAt: '2027-10-05T00:00:00.000Z' },
+      },
+    },
+  }))
+  await signIn(page)
+
+  await page.getByRole('button', { name: 'Open health details for E2E Server' }).click()
+  const tls = page.locator('.telemetry-fact').filter({ hasText: 'SSL / TLS' })
+  await expect(tls).toContainText('Untrusted · 2027-10-05')
+  await expect(tls.locator('strong')).toHaveAttribute('data-state', 'attention')
 })
 
 test('legacy dashboard payload shows missing application details without crashing', async ({ page }) => {

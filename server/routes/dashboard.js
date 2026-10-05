@@ -5,6 +5,50 @@ const db = require('../db');
 const audit = require('../audit');
 
 const router = express.Router();
+const TELEMETRY_FRESH_MS = 3 * 60 * 1000;
+
+function hasFreshTelemetry(server, now) {
+  const checkedAt = new Date(server.telemetry?.checkedAt || '').getTime();
+  const age = now - checkedAt;
+  return Number.isFinite(checkedAt) && age >= -30_000 && age <= TELEMETRY_FRESH_MS;
+}
+
+function coveredSignal(servers, isAvailable, now) {
+  if (!servers.length) return 'unknown';
+  const observed = servers.filter((server) => hasFreshTelemetry(server, now) && isAvailable(server.telemetry));
+  if (!observed.length) return 'unknown';
+  return observed.length === servers.length ? 'healthy' : 'attention';
+}
+
+function telemetrySignals(servers, now = Date.now()) {
+  if (!servers.length) return { agent: 'unknown', network: 'unknown', ssl: 'unknown' };
+
+  const agentReady = servers.filter((server) =>
+    server.agent?.state === 'ready' && hasFreshTelemetry(server, now)
+  );
+  const tlsReports = servers
+    .filter((server) => hasFreshTelemetry(server, now))
+    .map((server) => server.telemetry?.tls?.state);
+  const ssl = tlsReports.includes('expired')
+    ? 'critical'
+    : tlsReports.includes('untrusted')
+      ? 'attention'
+    : tlsReports.length === servers.length && tlsReports.every((state) => state === 'valid')
+      ? 'healthy'
+      : tlsReports.some((state) => state === 'valid')
+        ? 'attention'
+        : 'unknown';
+
+  return {
+    agent: agentReady.length === servers.length ? 'healthy' : 'attention',
+    network: coveredSignal(
+      servers,
+      (telemetry) => telemetry.network?.receivedBytes != null && telemetry.network?.sentBytes != null,
+      now
+    ),
+    ssl,
+  };
+}
 
 router.get('/', (req, res) => {
   const store = db.get();
@@ -75,9 +119,7 @@ router.get('/', (req, res) => {
     application: !projects.length || hasUnobservedApplication ? 'unknown' : anyProjectUnhealthy ? 'critical' : anyProjectNeedsAttention ? 'attention' : 'healthy',
     server: !servers.length ? 'unknown' : anyServerDown ? 'attention' : 'healthy',
     deployment: !deployments.length ? 'unknown' : anyDeploymentBlockedOrFailed ? 'attention' : 'healthy',
-    agent: 'unknown',
-    network: 'unknown',
-    ssl: 'unknown',
+    ...telemetrySignals(servers),
     security: 'unknown',
   };
 
@@ -94,3 +136,4 @@ router.get('/', (req, res) => {
 });
 
 module.exports = router;
+module.exports.telemetrySignals = telemetrySignals;

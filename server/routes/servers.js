@@ -17,6 +17,14 @@ const BOOTSTRAP_SCRIPT = fs.readFileSync(
   path.join(__dirname, '..', 'remote-scripts', 'bootstrap-server.sh'),
   'utf8'
 );
+const RESOURCE_AGENT_SCRIPT = fs.readFileSync(
+  path.join(__dirname, '..', 'remote-scripts', 'forge-resource-agent.sh'),
+  'utf8'
+);
+const RESOURCE_AGENT_INSTALLER = fs.readFileSync(
+  path.join(__dirname, '..', 'remote-scripts', 'install-resource-agent.sh'),
+  'utf8'
+);
 const LOCAL_EMULATOR_BOOTSTRAP_ERROR =
   'The local AWS emulator accepted the EC2 launch request but does not boot a Linux guest for SSH setup. Use real AWS to provision a managed server, or connect an existing Linux host.';
 
@@ -55,6 +63,35 @@ function postInitFailure(check) {
   return `Post-initialization checks failed: ${failures.join(', ')}. The server was not marked ready.`;
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+async function installResourceAgent(server) {
+  await ssh.uploadContent(server, RESOURCE_AGENT_SCRIPT, '/tmp/forge-resource-agent.sh', 0o700);
+  await ssh.uploadContent(server, RESOURCE_AGENT_INSTALLER, '/tmp/forge-resource-agent-install.sh', 0o700);
+  const command = [
+    `bash /tmp/forge-resource-agent-install.sh ${shellQuote(server.sshUser || 'ubuntu')} ${shellQuote(server.host)}`,
+    'install_status=$?',
+    'rm -f /tmp/forge-resource-agent.sh /tmp/forge-resource-agent-install.sh',
+    'exit "$install_status"',
+  ].join('; ');
+  const result = await ssh.exec(server, command, { timeoutMs: 60000 });
+  if (result.code !== 0 || !result.stdout.includes('FORGE_AGENT_INSTALLED=ready')) {
+    throw new Error('Agent installation did not complete. Check SSH access, passwordless sudo, and systemd.');
+  }
+
+  const telemetry = await ssh.readAgentTelemetry(server);
+  const agent = {
+    state: 'ready',
+    installedAt: new Date().toISOString(),
+    lastSeenAt: telemetry.checkedAt,
+  };
+  server.agent = agent;
+  server.telemetry = telemetry;
+  return { agent, telemetry };
+}
+
 failPendingEmulatorProvisioning();
 
 router.get('/', (req, res) => {
@@ -75,11 +112,49 @@ router.get(
     const server = db.get().servers.find((item) => item.id === req.params.id);
     if (!server) return res.status(404).json({ error: 'Server not found.' });
     try {
-      res.json({ telemetry: await ssh.collectTelemetry(server) });
+      let telemetry;
+      if (server.agent?.state === 'ready') {
+        try {
+          telemetry = await ssh.readAgentTelemetry(server);
+        } catch {
+          server.agent = {
+            ...server.agent,
+            state: 'stale',
+            lastError: 'The telemetry agent did not return a current snapshot.',
+          };
+        }
+      }
+      telemetry ||= await ssh.collectTelemetry(server);
+      server.telemetry = telemetry;
+      if (telemetry.collector === 'agent' && server.agent) server.agent.lastSeenAt = telemetry.checkedAt;
+      db.save();
+      res.json({ telemetry });
     } catch {
       res.status(503).json({
         error: 'Host telemetry is unavailable. Verify SSH access and stored credentials, then retry.',
       });
+    }
+  })
+);
+
+router.post(
+  '/:id/agent/install',
+  asyncHandler(async (req, res) => {
+    const server = db.get().servers.find((item) => item.id === req.params.id);
+    if (!server) return res.status(404).json({ error: 'Server not found.' });
+    if (server.status !== 'ready') {
+      return res.status(409).json({ error: 'Connect and prepare this server before installing the telemetry agent.' });
+    }
+
+    try {
+      const result = await installResourceAgent(server);
+      db.saveSync();
+      audit.record({ actor: req.user.username, action: 'server.telemetry_agent.installed', resource: `server:${server.id}` });
+      res.json({ server: toPublic(server), ...result });
+    } catch {
+      server.agent = { state: 'error', lastError: 'Installation failed. Verify SSH, passwordless sudo, and systemd.' };
+      db.saveSync();
+      res.status(503).json({ error: server.agent.lastError });
     }
   })
 );

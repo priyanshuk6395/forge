@@ -169,6 +169,11 @@ the container is removed.
      and security group for you, using either AWS keys you paste into
      Settings → AWS, or (if Forge itself is running on an EC2 instance with
      an IAM role attached) that role automatically.
+   - **Host telemetry** — open the server's Health details and select
+     **Install telemetry agent**. Forge transfers the read-only sampler over
+     authenticated SSH/SFTP. A dedicated non-login system user and systemd
+     timer collect metrics every minute; Forge reads the snapshot over SSH,
+     so the agent opens no inbound port.
 
 3. **Projects → New project**: pick a repo + branch, the port your app
    listens on, and a health-check path. Your repo needs a `Dockerfile` —
@@ -194,12 +199,15 @@ deploy over SSH, one-click rollback via kept image tags, encrypted secrets/
 env vars, EC2 provisioning *or* bring-your-own-server, health-check polling
 with an optional auto-restart, push-to-deploy webhooks, committed-secret
 scanning (gitleaks) and critical-CVE image scanning (Trivy) that block a
-bad deploy, a full audit log, and a UI for all of it.
+bad deploy, a read-only host telemetry agent installed over authenticated
+SSH/SFTP and supervised by systemd, a full audit log, and a UI for all of it.
 
 **Deliberately deferred** (noted here instead of half-built):
-- **TLS / custom domains** — Forge itself and deployed apps run on plain
-  HTTP. Put a TLS-terminating proxy (Caddy, an ALB, Cloudflare) in front of
-  anything beyond quick/internal use.
+- **TLS / custom domains** — Forge itself still listens on plain HTTP port 80;
+  host TLS telemetry only checks the registered target host and does not
+  secure the Forge control plane. Trusted HTTPS requires a DNS hostname that
+  points to the Forge EC2 instance, inbound ports 80 and 443, and a TLS
+  terminator such as Caddy/Let's Encrypt or an AWS ALB with ACM.
 - **Multiple users / SSO** — one owner account per Forge instance.
 - **docker-compose / non-Dockerfile apps** — Dockerfile only, for now.
 - **Preview environments per branch/PR** — one branch → one environment.

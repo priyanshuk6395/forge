@@ -171,7 +171,9 @@ export function useServers(enabled = true) {
       const list = query.state.data || []
       return list.some((s) => s.status === 'connecting' || s.status === 'provisioning')
         ? 4000
-        : false
+        : list.some((server) => server.agent?.state === 'ready' || server.agent?.state === 'stale')
+          ? 60_000
+          : false
     },
   })
 }
@@ -186,6 +188,21 @@ export function useServerTelemetry(serverId: string | null) {
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
     retry: false,
+  })
+}
+
+export function useInstallServerAgent() {
+  return useMutation({
+    mutationFn: (serverId: string) =>
+      api.post<{ server: Server; telemetry: ServerTelemetry }>(`/servers/${serverId}/agent/install`, {}),
+    onSuccess: ({ server, telemetry }) => {
+      queryClient.setQueryData<Server[]>(['servers'], (current) =>
+        current?.map((item) => item.id === server.id ? { ...item, ...server } : item)
+      )
+      queryClient.setQueryData(['server-telemetry', server.id], telemetry)
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      queryClient.invalidateQueries({ queryKey: ['audit'] })
+    },
   })
 }
 

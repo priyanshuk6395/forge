@@ -104,23 +104,45 @@ async function connect(baseUrl, credentials = {}) {
 test('telemetry report parses resource counters and certificate expiry', () => {
   const report = ssh.parseTelemetryReport([
     'FORGE_TELEMETRY_CHECKED_AT=2026-10-05T00:00:00Z',
+    'FORGE_TELEMETRY_CHECKED_EPOCH=1',
     'FORGE_TELEMETRY_CPU_PERCENT=23.5',
+    'FORGE_TELEMETRY_CPU_CORES=2',
+    'FORGE_TELEMETRY_LOAD_ONE=0.25',
+    'FORGE_TELEMETRY_LOAD_FIVE=0.2',
+    'FORGE_TELEMETRY_LOAD_FIFTEEN=0.15',
+    'FORGE_TELEMETRY_UPTIME_SECONDS=3600',
+    'FORGE_TELEMETRY_PLATFORM=Ubuntu 24.04 LTS',
     'FORGE_TELEMETRY_MEMORY_USED_BYTES=5000000',
     'FORGE_TELEMETRY_MEMORY_TOTAL_BYTES=10000000',
     'FORGE_TELEMETRY_DISK_USED_BYTES=12000000',
     'FORGE_TELEMETRY_DISK_TOTAL_BYTES=100000000',
     'FORGE_TELEMETRY_NETWORK_RECEIVED_BYTES=1000000',
     'FORGE_TELEMETRY_NETWORK_SENT_BYTES=2000000',
+    'FORGE_TELEMETRY_NETWORK_INTERFACES=2',
+    'FORGE_TELEMETRY_NETWORK_RECEIVED_BPS=4096',
+    'FORGE_TELEMETRY_NETWORK_SENT_BPS=1024',
+    'FORGE_TELEMETRY_TLS_STATE=valid',
     'FORGE_TELEMETRY_TLS_END_DATE=Oct  5 00:00:00 2027 GMT',
-  ].join('\n'));
+  ].join('\n'), undefined, 'agent');
 
   assert.deepEqual(report, {
     checkedAt: '2026-10-05T00:00:00Z',
-    collector: 'ssh',
+    checkedEpoch: 1,
+    collector: 'agent',
     cpuPercent: 23.5,
+    cpuCores: 2,
+    loadAverage: { one: 0.25, five: 0.2, fifteen: 0.15 },
+    uptimeSeconds: 3600,
+    platform: 'Ubuntu 24.04 LTS',
     memory: { usedBytes: 5000000, totalBytes: 10000000, percent: 50 },
     disk: { usedBytes: 12000000, totalBytes: 100000000, percent: 12 },
-    network: { receivedBytes: 1000000, sentBytes: 2000000 },
+    network: {
+      receivedBytes: 1000000,
+      sentBytes: 2000000,
+      interfaces: 2,
+      receivedBytesPerSecond: 4096,
+      sentBytesPerSecond: 1024,
+    },
     tls: { state: 'valid', expiresAt: '2027-10-05T00:00:00.000Z' },
   });
 });
@@ -136,6 +158,16 @@ test('telemetry report preserves missing resource counters as unavailable', () =
   assert.equal(report.disk.percent, null);
   assert.equal(report.network.receivedBytes, null);
   assert.equal(report.tls.state, 'unavailable');
+});
+
+test('telemetry report distinguishes an untrusted certificate from a valid one', () => {
+  const report = ssh.parseTelemetryReport([
+    'FORGE_TELEMETRY_TLS_STATE=untrusted',
+    'FORGE_TELEMETRY_TLS_END_DATE=Oct  5 00:00:00 2027 GMT',
+  ].join('\n'));
+
+  assert.equal(report.tls.state, 'untrusted');
+  assert.equal(report.tls.expiresAt, '2027-10-05T00:00:00.000Z');
 });
 
 test('telemetry endpoint returns collected metrics without exposing SSH credentials', async (t) => {
@@ -180,6 +212,114 @@ test('telemetry endpoint returns collected metrics without exposing SSH credenti
   assert.deepEqual(body, { telemetry });
   assert.equal(collectedServer.sshKeyEnc, encryptedKey);
   assert.doesNotMatch(JSON.stringify(body), /test-only-private-key|sshKeyEnc/);
+});
+
+test('telemetry endpoint reads the installed agent snapshot', async (t) => {
+  resetStore();
+  db.get().servers.push({
+    id: 'srv_agent',
+    name: 'Agent host',
+    host: '192.0.2.32',
+    sshUser: 'ubuntu',
+    sshPort: 22,
+    provider: 'existing',
+    status: 'ready',
+    sshKeyEnc: encrypt('test-only-agent-key'),
+    agent: { state: 'ready', installedAt: '2026-10-05T00:00:00Z' },
+  });
+  db.saveSync();
+
+  const telemetry = ssh.parseTelemetryReport('FORGE_TELEMETRY_CPU_PERCENT=12.5', undefined, 'agent');
+  let readCount = 0;
+  mockSsh(t, {
+    readAgentTelemetry: async () => { readCount++; return telemetry; },
+    collectTelemetry: async () => { throw new Error('The direct SSH fallback should not run.'); },
+  });
+
+  const baseUrl = await createApi(t);
+  const response = await fetch(`${baseUrl}/api/servers/srv_agent/telemetry`);
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(readCount, 1);
+  assert.equal(body.telemetry.collector, 'agent');
+  assert.equal(db.get().servers[0].agent.lastSeenAt, telemetry.checkedAt);
+  assert.doesNotMatch(JSON.stringify(body), /test-only-agent-key|sshKeyEnc/);
+});
+
+test('telemetry endpoint falls back to SSH and marks an unresponsive agent stale', async (t) => {
+  resetStore();
+  db.get().servers.push({
+    id: 'srv_stale_agent',
+    name: 'Stale agent host',
+    host: '192.0.2.34',
+    sshUser: 'ubuntu',
+    sshPort: 22,
+    provider: 'existing',
+    status: 'ready',
+    sshKeyEnc: encrypt('test-only-stale-agent-key'),
+    agent: { state: 'ready' },
+  });
+  db.saveSync();
+
+  const fallback = ssh.parseTelemetryReport('FORGE_TELEMETRY_CPU_PERCENT=8.5');
+  mockSsh(t, {
+    readAgentTelemetry: async () => { throw new Error('Agent file missing.'); },
+    collectTelemetry: async () => fallback,
+  });
+
+  const baseUrl = await createApi(t);
+  const response = await fetch(`${baseUrl}/api/servers/srv_stale_agent/telemetry`);
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.telemetry.collector, 'ssh');
+  assert.equal(db.get().servers[0].agent.state, 'stale');
+  assert.match(db.get().servers[0].agent.lastError, /did not return a current snapshot/);
+});
+
+test('agent install transfers scripts over SFTP and persists only public status', async (t) => {
+  resetStore();
+  const encryptedKey = encrypt('test-only-agent-install-key');
+  db.get().servers.push({
+    id: 'srv_install_agent',
+    name: 'Install agent host',
+    host: '192.0.2.33',
+    sshUser: 'ubuntu',
+    sshPort: 22,
+    provider: 'existing',
+    status: 'ready',
+    sshKeyEnc: encryptedKey,
+  });
+  db.saveSync();
+
+  const uploads = [];
+  const telemetry = ssh.parseTelemetryReport('FORGE_TELEMETRY_CPU_PERCENT=19.5', undefined, 'agent');
+  let installCommand = '';
+  mockSsh(t, {
+    uploadContent: async (server, content, remotePath, mode) => uploads.push({ server, content, remotePath, mode }),
+    exec: async (server, command) => {
+      installCommand = command;
+      return { code: 0, stdout: 'FORGE_AGENT_INSTALLED=ready', stderr: '' };
+    },
+    readAgentTelemetry: async () => telemetry,
+  });
+
+  const baseUrl = await createApi(t);
+  const response = await fetch(`${baseUrl}/api/servers/srv_install_agent/agent/install`, { method: 'POST' });
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(uploads.length, 2);
+  assert.deepEqual(uploads.map((item) => item.remotePath), [
+    '/tmp/forge-resource-agent.sh',
+    '/tmp/forge-resource-agent-install.sh',
+  ]);
+  assert.match(installCommand, /'ubuntu' '192\.0\.2\.33'/);
+  assert.equal(body.server.agent.state, 'ready');
+  assert.equal(body.telemetry.collector, 'agent');
+  assert.equal(db.get().servers[0].sshKeyEnc, encryptedKey);
+  assert.doesNotMatch(JSON.stringify(body), /test-only-agent-install-key|sshKeyEnc/);
 });
 
 test('telemetry endpoint returns a safe unavailable response for invalid stored credentials', async (t) => {

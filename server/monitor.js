@@ -3,8 +3,11 @@
 const db = require('./db');
 const audit = require('./audit');
 const deploy = require('./deploy');
+const ssh = require('./ssh');
 
 const CHECK_INTERVAL_MS = 30_000;
+const TELEMETRY_INTERVAL_MS = 60_000;
+const TELEMETRY_STALE_ERROR = 'The telemetry agent did not return a current snapshot.';
 const FAILURE_THRESHOLD = 3; // consecutive failed checks before it's an incident
 const HEAL_COOLDOWN_MS = 5 * 60 * 1000; // don't restart-loop a genuinely broken app
 
@@ -104,6 +107,8 @@ async function maybeResolveIncident(project) {
 }
 
 let timer = null;
+let telemetryTimer = null;
+let telemetryBusy = false;
 
 async function tick() {
   const projects = db.get().projects;
@@ -116,15 +121,43 @@ async function tick() {
   }
 }
 
+async function tickTelemetry() {
+  if (telemetryBusy) return;
+  telemetryBusy = true;
+  try {
+    const servers = db.get().servers.filter((server) =>
+      server.status === 'ready' && ['ready', 'stale'].includes(server.agent?.state)
+    );
+    await Promise.all(servers.map(async (server) => {
+      try {
+        const telemetry = await ssh.readAgentTelemetry(server);
+        if (!ssh.isTelemetryFresh(telemetry)) throw new Error(TELEMETRY_STALE_ERROR);
+        server.telemetry = telemetry;
+        server.agent = { ...server.agent, state: 'ready', lastSeenAt: telemetry.checkedAt };
+        delete server.agent.lastError;
+      } catch {
+        server.agent = { ...server.agent, state: 'stale', lastError: TELEMETRY_STALE_ERROR };
+      }
+    }));
+    if (servers.length) db.save();
+  } finally {
+    telemetryBusy = false;
+  }
+}
+
 function start() {
   if (timer) return;
   tick();
+  tickTelemetry();
   timer = setInterval(tick, CHECK_INTERVAL_MS);
+  telemetryTimer = setInterval(tickTelemetry, TELEMETRY_INTERVAL_MS);
 }
 
 function stop() {
   clearInterval(timer);
+  clearInterval(telemetryTimer);
   timer = null;
+  telemetryTimer = null;
 }
 
-module.exports = { start, stop, tick };
+module.exports = { start, stop, tick, tickTelemetry };

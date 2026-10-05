@@ -763,6 +763,8 @@ html.light {
   .detail-fact dt { color: var(--color-text-muted); font-size: 10px; }
   .detail-fact dd { margin: 4px 0 0; color: var(--color-text); font-size: 12px; overflow-wrap: anywhere; text-transform: capitalize; }
   .detail-fact dd.technical-value { color: var(--color-text-secondary); font-size: 10px; text-transform: none; }
+  .telemetry-breakdown { margin-top: 8px; }
+  .telemetry-breakdown .detail-fact { min-height: 58px; }
 
   .setup-checks-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .setup-check-phase { min-width: 0; padding: 12px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); }
@@ -802,6 +804,7 @@ html.light {
   .telemetry-fact > span { color: var(--color-text-secondary); }
   .telemetry-fact strong { color: var(--color-text-muted); font-weight: 500; text-align: right; }
   .telemetry-fact strong[data-state="healthy"] { color: var(--color-success); }
+  .telemetry-fact strong[data-state="attention"] { color: var(--color-warning); }
   .telemetry-fact strong[data-state="critical"] { color: var(--color-danger); }
   .telemetry-fact svg { width: 14px; height: 14px; flex: 0 0 auto; }
   .detail-context-note { display: flex; align-items: flex-start; gap: 7px; margin: 9px 0 0; color: var(--color-text-muted); font-size: 10px; }

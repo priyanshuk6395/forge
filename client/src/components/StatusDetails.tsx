@@ -21,7 +21,7 @@ import {
 import { Button } from '@/components/ui/Button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
 import { useToast } from '@/components/ui/Toaster'
-import { useDeleteServer, useRollbackProject, useServerTelemetry, useTestServer } from '@/api/queries'
+import { useDeleteServer, useInstallServerAgent, useRollbackProject, useServerTelemetry, useTestServer } from '@/api/queries'
 import type { ActivityEntry, ApplicationStatus, AuditEvent, IncidentSummary, Server, ServerRequirementReport, ServerTelemetry } from '@/api/types'
 import { timeAgo } from '@/lib/utils'
 import { getServerState, SystemStateLabel } from '@/components/StatusCenter'
@@ -38,6 +38,7 @@ interface ServerHealthDetailProps {
 export function ServerHealthDetail({ server, applications, activity, onBack, onOpenProject }: ServerHealthDetailProps) {
   const { toast } = useToast()
   const testServer = useTestServer()
+  const installAgent = useInstallServerAgent()
   const deleteServer = useDeleteServer()
   const telemetryQuery = useServerTelemetry(server?.id ?? null)
   const [confirmRemove, setConfirmRemove] = useState(false)
@@ -67,6 +68,26 @@ export function ServerHealthDetail({ server, applications, activity, onBack, onO
     ? `Rx ${formatBytes(telemetry.network.receivedBytes)} · Tx ${formatBytes(telemetry.network.sentBytes)}`
     : null
   const tlsValue = formatTls(telemetry?.tls, unavailableTelemetry)
+  const collectorValue = server.agent?.state === 'stale'
+    ? 'Agent stale'
+    : server.agent?.state === 'error'
+      ? 'Install failed'
+      : telemetry?.collector === 'agent'
+        ? 'Agent online'
+        : 'Agentless SSH'
+
+  const handleInstallAgent = async () => {
+    setActionMessage('Installing telemetry agent…')
+    try {
+      await installAgent.mutateAsync(server.id)
+      setActionMessage('Telemetry agent installed and reporting.')
+      toast('Telemetry agent installed and reporting.', 'success')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Telemetry agent installation failed.'
+      setActionMessage(message)
+      toast(message, 'error')
+    }
+  }
 
   const handleTest = async () => {
     setActionMessage('Testing SSH connection…')
@@ -140,16 +161,25 @@ export function ServerHealthDetail({ server, applications, activity, onBack, onO
           <TelemetryFact icon={MemoryStick} label="Memory" value={memoryValue ?? unavailableTelemetry} />
           <TelemetryFact icon={HardDrive} label="Disk" value={diskValue ?? unavailableTelemetry} />
           <TelemetryFact icon={Network} label="Network" value={networkValue ?? unavailableTelemetry} />
-          <TelemetryFact icon={ShieldCheck} label="SSL / TLS" value={tlsValue} state={telemetry?.tls.state === 'valid' ? 'healthy' : telemetry?.tls.state === 'expired' ? 'critical' : 'unknown'} />
-          <TelemetryFact icon={Activity} label="Collector" value={telemetryQuery.isError ? 'SSH unavailable' : 'Agentless SSH'} />
+          <TelemetryFact icon={ShieldCheck} label="SSL / TLS" value={tlsValue} state={telemetry?.tls.state === 'valid' ? 'healthy' : telemetry?.tls.state === 'expired' ? 'critical' : telemetry?.tls.state === 'untrusted' ? 'attention' : 'unknown'} />
+          <TelemetryFact icon={Activity} label="Collector" value={telemetryQuery.isError ? 'SSH unavailable' : collectorValue} />
         </div>
+        <dl className="detail-fact-grid telemetry-breakdown">
+          <Fact label="Operating system" value={telemetry?.platform || unavailableTelemetry} technical />
+          <Fact label="CPU cores" value={telemetry?.cpuCores == null ? unavailableTelemetry : String(telemetry.cpuCores)} technical />
+          <Fact label="Load average (1 / 5 / 15 min)" value={formatLoadAverage(telemetry)} technical />
+          <Fact label="Uptime" value={formatDuration(telemetry?.uptimeSeconds) || unavailableTelemetry} technical />
+          <Fact label="Network interfaces" value={telemetry?.network.interfaces == null ? unavailableTelemetry : String(telemetry.network.interfaces)} technical />
+          <Fact label="Receive rate" value={formatRate(telemetry?.network.receivedBytesPerSecond) || unavailableTelemetry} technical />
+          <Fact label="Transmit rate" value={formatRate(telemetry?.network.sentBytesPerSecond) || unavailableTelemetry} technical />
+        </dl>
         <p className="detail-context-note">
           <CircleHelp aria-hidden="true" />
           {telemetryQuery.isError
             ? `Live telemetry could not be collected over SSH: ${telemetryQuery.error instanceof Error ? telemetryQuery.error.message : 'unknown error'}`
             : telemetry
-              ? <>Collected over SSH <time dateTime={telemetry.checkedAt}>{timeAgo(telemetry.checkedAt)}</time>. Network totals are cumulative since boot; TLS checks the registered host on port 443.</>
-              : 'Connecting over SSH to sample this host. No persistent monitoring agent is required.'}
+              ? <>{telemetry.collector === 'agent' ? 'Agent sample' : 'SSH sample'} <time dateTime={telemetry.checkedAt}>{timeAgo(telemetry.checkedAt)}</time>. The agent refreshes every minute. Network totals are since boot; rates use the previous sample. TLS checks the registered host on port 443.</>
+              : 'Connecting over SSH to sample this host. Install the agent for scheduled reports and network rates.'}
         </p>
       </section>
 
@@ -190,6 +220,16 @@ export function ServerHealthDetail({ server, applications, activity, onBack, onO
 
       <div className="detail-action-bar">
         {actionMessage && <p className="detail-action-message" role="status" aria-live="polite">{actionMessage}</p>}
+        <Button variant="subtle" onClick={handleInstallAgent} disabled={installAgent.isPending || server.status !== 'ready' || server.agent?.state === 'ready'}>
+          {installAgent.isPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Activity aria-hidden="true" />}
+          {installAgent.isPending
+            ? 'Installing agent'
+            : server.agent?.state === 'ready'
+              ? 'Agent installed'
+              : server.agent?.state === 'stale' || server.agent?.state === 'error'
+                ? 'Repair telemetry agent'
+                : 'Install telemetry agent'}
+        </Button>
         <Button variant="subtle" onClick={handleTest} disabled={testServer.isPending}>
           {testServer.isPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Wifi aria-hidden="true" />}
           {testServer.isPending ? 'Testing SSH' : 'Test SSH'}
@@ -410,7 +450,7 @@ function ActivityList({ entries, showResult = false }: { entries: (ActivityEntry
   )
 }
 
-function TelemetryFact({ icon: Icon, label, value, state = 'unknown' }: { icon: typeof Cpu; label: string; value: string; state?: 'healthy' | 'critical' | 'unknown' }) {
+function TelemetryFact({ icon: Icon, label, value, state = 'unknown' }: { icon: typeof Cpu; label: string; value: string; state?: 'healthy' | 'attention' | 'critical' | 'unknown' }) {
   return (
     <div className="telemetry-fact">
       <span><Icon aria-hidden="true" /> {label}</span>
@@ -436,6 +476,10 @@ function formatCapacity(used: number | null | undefined, total: number | null | 
 
 function formatTls(tls: ServerTelemetry['tls'] | undefined, unavailable: string) {
   if (!tls) return unavailable
+  if (tls.state === 'untrusted') {
+    const expiryDate = tls.expiresAt?.slice(0, 10) ?? 'date unknown'
+    return `Untrusted · ${expiryDate}`
+  }
   if (tls.state !== 'valid' && tls.state !== 'expired') return 'Not verified'
   const expiryDate = tls.expiresAt?.slice(0, 10) ?? 'date unknown'
   return `${tls.state === 'valid' ? 'Valid' : 'Expired'} · ${expiryDate}`
@@ -512,4 +556,23 @@ function eventCategory(action: string): ActivityFilter | 'other' {
 
 function formatActivityAction(action: string) {
   return action.split('.').map((part) => part.replace(/[_-]/g, ' ')).join(' · ')
+}
+
+function formatRate(bytesPerSecond: number | null | undefined) {
+  const bytes = formatBytes(bytesPerSecond)
+  return bytes ? `${bytes}/s` : null
+}
+
+function formatLoadAverage(telemetry: ServerTelemetry | undefined) {
+  const load = telemetry?.loadAverage
+  if (load?.one == null || load.five == null || load.fifteen == null) return 'Not reported'
+  return `${load.one.toFixed(2)} / ${load.five.toFixed(2)} / ${load.fifteen.toFixed(2)}`
+}
+
+function formatDuration(seconds: number | null | undefined) {
+  if (seconds == null || !Number.isFinite(seconds)) return null
+  const days = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  return [days && `${days}d`, hours && `${hours}h`, `${minutes}m`].filter(Boolean).join(' ')
 }

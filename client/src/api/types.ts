@@ -94,12 +94,30 @@ export interface Server {
   instanceId?: string
   region?: string
   setupChecks?: ServerSetupChecks
+  agent?: ServerTelemetryAgent
+  telemetry?: ServerTelemetry
+}
+
+export interface ServerTelemetryAgent {
+  state: 'ready' | 'stale' | 'error'
+  installedAt?: string
+  lastSeenAt?: string
+  lastError?: string
 }
 
 export interface ServerTelemetry {
   checkedAt: string
-  collector: 'ssh'
+  checkedEpoch: number | null
+  collector: 'ssh' | 'agent'
   cpuPercent: number | null
+  cpuCores: number | null
+  loadAverage: {
+    one: number | null
+    five: number | null
+    fifteen: number | null
+  }
+  uptimeSeconds: number | null
+  platform: string | null
   memory: {
     usedBytes: number | null
     totalBytes: number | null
@@ -113,9 +131,12 @@ export interface ServerTelemetry {
   network: {
     receivedBytes: number | null
     sentBytes: number | null
+    interfaces: number | null
+    receivedBytesPerSecond: number | null
+    sentBytesPerSecond: number | null
   }
   tls: {
-    state: 'valid' | 'expired' | 'unavailable'
+    state: 'valid' | 'expired' | 'untrusted' | 'unavailable'
     expiresAt?: string
   }
 }

@@ -2,6 +2,7 @@
 
 const { Client } = require('ssh2');
 const { decrypt, redact } = require('./crypto');
+const MAX_AGENT_SAMPLE_AGE_MS = 3 * 60 * 1000;
 
 const REQUIREMENT_CHECK_COMMAND = [
   'if [ -r /etc/os-release ]; then . /etc/os-release; else ID=unknown; ID_LIKE=; fi',
@@ -17,6 +18,7 @@ const REQUIREMENT_CHECK_COMMAND = [
 ].join('\n');
 
 const HOST_TELEMETRY_COMMAND = [
+  'export LC_ALL=C',
   "set -- $(awk '/^cpu / { print $2+$3+$4+$5+$6+$7+$8+$9, $5+$6 }' /proc/stat)",
   'total_before=$1',
   'idle_before=$2',
@@ -33,11 +35,36 @@ const HOST_TELEMETRY_COMMAND = [
   'disk_used=$1',
   'disk_total=$2',
   'disk_percent=$3',
-  "set -- $(awk -F '[: ]+' 'NR > 2 && $2 != \"lo\" { rx += $3; tx += $11 } END { printf \"%.0f %.0f\", rx, tx }' /proc/net/dev)",
+  "set -- $(awk -F: 'NR > 2 { iface=$1; gsub(/[ \\t]/, \"\", iface); if (iface != \"lo\") { split($2, stat); rx+=stat[1]; tx+=stat[9]; count++ } } END { printf \"%.0f %.0f %d\", rx, tx, count }' /proc/net/dev)",
   'network_received=$1',
   'network_sent=$2',
+  'network_interfaces=$3',
+  'tls_state=unavailable',
+  'tls_end_date=',
+  'if command -v openssl >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then',
+  'case "$FORGE_TELEMETRY_SERVER_NAME" in *[!0-9.]* )',
+  '  tls_output=$(timeout 8 openssl s_client -connect "$FORGE_TELEMETRY_SERVER_NAME:443" -servername "$FORGE_TELEMETRY_SERVER_NAME" -verify_hostname "$FORGE_TELEMETRY_SERVER_NAME" -verify_return_error </dev/null 2>&1 || true)',
+  '  ;;',
+  '  *) tls_output=$(timeout 8 openssl s_client -connect "$FORGE_TELEMETRY_SERVER_NAME:443" -verify_ip "$FORGE_TELEMETRY_SERVER_NAME" -verify_return_error </dev/null 2>&1 || true) ;;',
+  'esac',
+  'tls_end_date=$(printf "%s\\n" "$tls_output" | openssl x509 -noout -enddate 2>/dev/null | sed -n "s/^notAfter=//p" | head -n 1)',
+  'if [ -n "$tls_end_date" ]; then if printf "%s\\n" "$tls_output" | grep -q "Verify return code: 0 (ok)"; then tls_state=valid; else tls_state=untrusted; fi; fi',
+  'fi',
+  "set -- $(awk '{ printf \"%.2f %.2f %.2f\", $1, $2, $3 }' /proc/loadavg)",
+  'load_one=$1',
+  'load_five=$2',
+  'load_fifteen=$3',
+  "uptime_seconds=$(awk '{ printf \"%.0f\", $1 }' /proc/uptime)",
+  "cpu_cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')",
+  "platform=$(. /etc/os-release 2>/dev/null; printf '%s' \"${PRETTY_NAME:-$(uname -s)}\")",
   "printf 'FORGE_TELEMETRY_CHECKED_AT=%s\\n' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"",
   "printf 'FORGE_TELEMETRY_CPU_PERCENT=%s\\n' \"$cpu_percent\"",
+  "printf 'FORGE_TELEMETRY_CPU_CORES=%s\\n' \"$cpu_cores\"",
+  "printf 'FORGE_TELEMETRY_LOAD_ONE=%s\\n' \"$load_one\"",
+  "printf 'FORGE_TELEMETRY_LOAD_FIVE=%s\\n' \"$load_five\"",
+  "printf 'FORGE_TELEMETRY_LOAD_FIFTEEN=%s\\n' \"$load_fifteen\"",
+  "printf 'FORGE_TELEMETRY_UPTIME_SECONDS=%s\\n' \"$uptime_seconds\"",
+  "printf 'FORGE_TELEMETRY_PLATFORM=%s\\n' \"$platform\"",
   "printf 'FORGE_TELEMETRY_MEMORY_USED_BYTES=%s\\n' \"$mem_used\"",
   "printf 'FORGE_TELEMETRY_MEMORY_TOTAL_BYTES=%s\\n' \"$mem_total\"",
   "printf 'FORGE_TELEMETRY_MEMORY_PERCENT=%s\\n' \"$mem_percent\"",
@@ -46,12 +73,9 @@ const HOST_TELEMETRY_COMMAND = [
   "printf 'FORGE_TELEMETRY_DISK_PERCENT=%s\\n' \"$disk_percent\"",
   "printf 'FORGE_TELEMETRY_NETWORK_RECEIVED_BYTES=%s\\n' \"$network_received\"",
   "printf 'FORGE_TELEMETRY_NETWORK_SENT_BYTES=%s\\n' \"$network_sent\"",
-  'if command -v openssl >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then',
-  "  tls_end_date=$(timeout 8 sh -c 'openssl s_client -connect \"$FORGE_TELEMETRY_SERVER_NAME:443\" -servername \"$FORGE_TELEMETRY_SERVER_NAME\" </dev/null 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null' 2>/dev/null | sed -n 's/^notAfter=//p' | head -n 1)",
-  "  if [ -n \"$tls_end_date\" ]; then printf 'FORGE_TELEMETRY_TLS_END_DATE=%s\\n' \"$tls_end_date\"; else printf 'FORGE_TELEMETRY_TLS_STATE=unavailable\\n'; fi",
-  'else',
-  "  printf 'FORGE_TELEMETRY_TLS_STATE=unavailable\\n'",
-  'fi',
+  "printf 'FORGE_TELEMETRY_NETWORK_INTERFACES=%s\\n' \"$network_interfaces\"",
+  "printf 'FORGE_TELEMETRY_TLS_STATE=%s\\n' \"$tls_state\"",
+  "if [ -n \"$tls_end_date\" ]; then printf 'FORGE_TELEMETRY_TLS_END_DATE=%s\\n' \"$tls_end_date\"; fi",
 ].join('\n');
 
 function clientFor(server) {
@@ -195,7 +219,7 @@ async function checkRequirements(server) {
   return parseRequirementReport(result.stdout);
 }
 
-function parseTelemetryReport(output, checkedAt = new Date().toISOString()) {
+function parseTelemetryReport(output, checkedAt = new Date().toISOString(), collector = 'ssh') {
   const values = {};
   for (const line of output.split(/\r?\n/)) {
     const match = line.match(/^FORGE_TELEMETRY_([A-Z_]+)=(.*)$/);
@@ -217,14 +241,32 @@ function parseTelemetryReport(output, checkedAt = new Date().toISOString()) {
   const diskTotalBytes = number('DISK_TOTAL_BYTES');
   const rawTlsDate = values.TLS_END_DATE;
   const tlsDate = rawTlsDate ? new Date(rawTlsDate) : null;
-  const tls = tlsDate && Number.isFinite(tlsDate.getTime())
-    ? { state: tlsDate.getTime() > Date.now() ? 'valid' : 'expired', expiresAt: tlsDate.toISOString() }
-    : { state: 'unavailable' };
+  const tlsState = tlsDate && Number.isFinite(tlsDate.getTime())
+    ? tlsDate.getTime() <= Date.now()
+      ? 'expired'
+      : values.TLS_STATE === 'valid'
+        ? 'valid'
+        : values.TLS_STATE === 'untrusted'
+          ? 'untrusted'
+          : 'unavailable'
+    : 'unavailable';
+  const tls = tlsState === 'unavailable'
+    ? { state: tlsState }
+    : { state: tlsState, expiresAt: tlsDate.toISOString() };
 
   return {
     checkedAt: values.CHECKED_AT || checkedAt,
-    collector: 'ssh',
+    checkedEpoch: number('CHECKED_EPOCH'),
+    collector,
     cpuPercent: percent(number('CPU_PERCENT')),
+    cpuCores: number('CPU_CORES'),
+    loadAverage: {
+      one: number('LOAD_ONE'),
+      five: number('LOAD_FIVE'),
+      fifteen: number('LOAD_FIFTEEN'),
+    },
+    uptimeSeconds: number('UPTIME_SECONDS'),
+    platform: values.PLATFORM || null,
     memory: {
       usedBytes: memoryUsedBytes,
       totalBytes: memoryTotalBytes,
@@ -238,6 +280,9 @@ function parseTelemetryReport(output, checkedAt = new Date().toISOString()) {
     network: {
       receivedBytes: number('NETWORK_RECEIVED_BYTES'),
       sentBytes: number('NETWORK_SENT_BYTES'),
+      interfaces: number('NETWORK_INTERFACES'),
+      receivedBytesPerSecond: number('NETWORK_RECEIVED_BPS'),
+      sentBytesPerSecond: number('NETWORK_SENT_BPS'),
     },
     tls,
   };
@@ -254,6 +299,20 @@ async function collectTelemetry(server) {
   return parseTelemetryReport(result.stdout);
 }
 
+async function readAgentTelemetry(server) {
+  const result = await exec(server, 'cat /var/lib/forge-resource-agent/telemetry.env', { timeoutMs: 15000 });
+  if (result.code !== 0) throw new Error('The Forge resource agent has not reported a sample yet.');
+  const telemetry = parseTelemetryReport(result.stdout, new Date().toISOString(), 'agent');
+  if (!isTelemetryFresh(telemetry)) throw new Error('The Forge resource agent snapshot is stale.');
+  return telemetry;
+}
+
+function isTelemetryFresh(telemetry, now = Date.now()) {
+  const checkedAt = new Date(telemetry?.checkedAt || '').getTime();
+  const age = now - checkedAt;
+  return Number.isFinite(checkedAt) && age >= -30_000 && age <= MAX_AGENT_SAMPLE_AGE_MS;
+}
+
 module.exports = {
   exec,
   uploadContent,
@@ -261,5 +320,7 @@ module.exports = {
   checkRequirements,
   parseRequirementReport,
   collectTelemetry,
+  readAgentTelemetry,
+  isTelemetryFresh,
   parseTelemetryReport,
 };
